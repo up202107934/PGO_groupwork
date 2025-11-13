@@ -196,12 +196,12 @@ def deadline_term(priority, waited):
     days_left = max(0, lim - waited)
     return 1.0 - (days_left / lim)
 
+
 # --------------------------------------------
 # FEASIBILITY & EVALUATION FUNCTIONS
 # --------------------------------------------
 
 def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIFT):
- 
     # --- bases de capacidade/availability por bloco e por cirurgião
     rooms_base = df_rooms[["room", "day", "shift", "available"]].copy()
     rooms_base["cap_min"] = rooms_base["available"] * C_PER_SHIFT
@@ -250,7 +250,7 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
         + surg_unavailable_viol
         + excess_block_min
         + excess_surgeon_min
-        )
+    )
 
     return {
         "n_unassigned": n_unassigned,
@@ -259,7 +259,6 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
         "excess_block_min": excess_block_min,
         "excess_surgeon_min": excess_surgeon_min,
         "feasibility_score": feasibility_score,
-        # úteis para a avaliação:
         "rooms_cap_join": rooms_join
     }
 
@@ -268,7 +267,6 @@ def evaluate_schedule(assignments, patients, rooms_free, weights=(0.4, 0.3, 0.2,
     total_patients = len(patients)
     ratio_scheduled = (len(assignments) / total_patients) if total_patients else 0.0
 
-    # usa diretamente o que já calculaste
     util_rooms = float(rooms_free.loc[rooms_free["cap_min"] > 0, "utilization"].mean()) if len(rooms_free) else 0.0
 
     if len(assignments):
@@ -631,6 +629,45 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
 
 print(f"\nExcel exported → {xlsx_path}")
 
+
+# ---------- 8) TEXT-BASED SCHEDULE (formato B_r_d_s + linhas) ----------
+print("\n================= FINAL TEXT SCHEDULE (Scenario 2) =================\n")
+
+if len(assignments_enriched) == 0:
+    print("(No assignments found — nothing to display.)")
+else:
+    INCLUDE_CLEANUP_IN_TIMELINE = True
+
+    # ordenar para que os casos dentro de cada bloco fiquem na ordem certa
+    assignments_sorted = assignments_enriched.sort_values(
+        ["room", "day", "shift", "seq_in_block", "iteration"]
+    )
+
+    blocks_text = []
+    for (r, d, sh), group in assignments_sorted.groupby(["room", "day", "shift"], sort=True):
+        t = 0
+        lines = []
+        for _, row in group.iterrows():
+            pid = int(row["patient_id"])
+            sid = int(row["surgeon_id"])
+            dur = int(row["duration"])
+            start = t
+            end = t + dur
+            lines.append(f"   (p={pid}, s={sid}, dur={dur}, start={start}, end={end})")
+            t = end + (CLEANUP if INCLUDE_CLEANUP_IN_TIMELINE else 0)
+
+        header = f"B_{int(r)}_{int(d)}_{int(sh)}:"
+        block_txt = header + "\n" + "\n".join(lines)
+        blocks_text.append(block_txt)
+
+    schedule_text = "\n\n".join(blocks_text)
+    print(schedule_text)
+    Path("schedule_text_output_s2.txt").write_text(schedule_text, encoding="utf-8")
+    print("\nSchedule saved to: schedule_text_output_s2.txt")
+
+print("\n====================================================================\n")
+
+
 # --------------------------------------------
 # RUN FEASIBILITY + EVALUATION ON FINAL SOLUTION 
 # --------------------------------------------
@@ -642,7 +679,6 @@ feas = feasibility_metrics(
     C_PER_SHIFT=C_PER_SHIFT
 )
 
-# RESUME
 print("\nFeasibility:", feas["feasibility_score"],
       "| unassigned:", feas["n_unassigned"],
       "| block_closed:", feas["block_unavailable_viol"],
@@ -662,7 +698,7 @@ if feas["feasibility_score"] == 0:
 else:
     print("Solution is infeasible (fix hard violations before comparing solutions).")
 
-# EXCEL
+# EXCEL – folha de avaliação
 _eval_row = {
     "n_unassigned": feas["n_unassigned"],
     "block_unavailable_viol": feas["block_unavailable_viol"],
@@ -674,6 +710,7 @@ _eval_row = {
 _eval_row.update({k: ev.get(k, None) for k in ["score","ratio_scheduled","util_rooms","prio_rate","norm_wait_term"]})
 eval_df = pd.DataFrame([_eval_row])
 
-# reabrir o mesmo ficheiro e acrescentar/atualizar a folha
+from openpyxl import load_workbook  # só para garantir que o engine existe
+
 with pd.ExcelWriter(xlsx_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
     eval_df.to_excel(writer, sheet_name="Feasibility_Eval", index=False)

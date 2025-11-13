@@ -1,0 +1,39 @@
+B_1_1_1:
+   (p=206, s=3, dur=260, start=0, end=260)
+   (p=84, s=1, dur=31, start=277, end=308)
+
+B_1_1_2:
+   (p=207, s=3, dur=210, start=0, end=210)
+   (p=222, s=6, dur=97, start=227, end=324)
+
+B_1_2_2:
+   (p=224, s=4, dur=131, start=0, end=131)
+   (p=85, s=6, dur=122, start=148, end=270)
+   (p=4, s=4, dur=39, start=287, end=326)
+
+B_1_3_2:
+   (p=98, s=9, dur=117, start=0, end=117)
+   (p=72, s=6, dur=131, start=134, end=265)
+   (p=32, s=3, dur=59, start=282, end=341)
+
+B_1_4_1:
+   (p=3, s=3, dur=210, start=0, end=210)
+   (p=18, s=3, dur=42, start=227, end=269)
+   (p=73, s=6, dur=47, start=286, end=333)
+
+B_2_2_1:
+   (p=219, s=3, dur=238, start=0, end=238)
+   (p=86, s=1, dur=72, start=255, end=327)
+
+B_2_2_2:
+   (p=80, s=1, dur=96, start=0, end=96)
+   (p=79, s=2, dur=103, start=113, end=216)
+   (p=75, s=1, dur=105, start=233, end=338)
+
+B_3_4_1:
+   (p=74, s=8, dur=238, start=0, end=238)
+   (p=24, s=2, dur=75, start=255, end=330)
+
+B_3_4_2:
+   (p=27, s=8, dur=217, start=0, end=217)
+   (p=2, s=2, dur=98, start=234, end=332)
