@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Operating Room Scheduling — Step 1 + Step 2 (Iterative Dispatching Rule)
+Scenario 2: Surgeon can change room within the same shift
 Author: Joana
 """
 
@@ -100,31 +101,38 @@ def feasible_blocks_step2(patient_row):
     need = int(patient_row["duration"]) + CLEANUP
 
     # surgeon available (day, shift)
-    surg_ok = df_surgeons[(df_surgeons["surgeon_id"] == sid) &
-                          (df_surgeons["available"] == 1)][["day", "shift"]]
+    surg_ok = df_surgeons[
+        (df_surgeons["surgeon_id"] == sid) &
+        (df_surgeons["available"] == 1)
+    ][["day", "shift"]]
 
     # rooms open with enough capacity
-    cap_ok = df_capacity[(df_capacity["available"] == 1) &
-                         (df_capacity["free_min"] >= need)][["room", "day", "shift", "free_min"]]
+    cap_ok = df_capacity[
+        (df_capacity["available"] == 1) &
+        (df_capacity["free_min"] >= need)
+    ][["room", "day", "shift", "free_min"]]
 
     cand = surg_ok.merge(cap_ok, on=["day", "shift"], how="inner")
 
     # surgeon load within shift capacity
-    surg_load = df_surgeon_load[df_surgeon_load["surgeon_id"] == sid][["day", "shift", "used_min"]]
+    surg_load = df_surgeon_load[
+        df_surgeon_load["surgeon_id"] == sid
+    ][["day", "shift", "used_min"]]
+
     cand = cand.merge(surg_load, on=["day", "shift"], how="left").fillna({"used_min": 0})
     cand = cand[(cand["used_min"] + need) <= C_PER_SHIFT]
 
     # continuity flag (already operating in same block)
     if len(df_assignments) > 0:
-        cont = df_assignments[df_assignments["surgeon_id"] == sid][["room", "day", "shift"]].copy()
+        cont = df_assignments[
+            df_assignments["surgeon_id"] == sid
+        ][["room", "day", "shift"]].copy()
         cont["continuity"] = 1
         cand = cand.merge(cont, on=["room", "day", "shift"], how="left")
     else:
         cand["continuity"] = 0
 
     cand["continuity"] = cand["continuity"].fillna(0).astype(int)
-    print(f"surgeon: {sid}, need: {need}")
-    print(cand)
     return cand
 
 
@@ -149,11 +157,19 @@ def commit_assignment(patient_row, best_row, iteration, w_patient=None, w_block=
     r, d, sh = int(best_row["room"]), int(best_row["day"]), int(best_row["shift"])
 
     # update capacity
-    idx = (df_capacity["room"] == r) & (df_capacity["day"] == d) & (df_capacity["shift"] == sh)
+    idx = (
+        (df_capacity["room"] == r) &
+        (df_capacity["day"] == d) &
+        (df_capacity["shift"] == sh)
+    )
     df_capacity.loc[idx, "free_min"] -= dur_need
 
     # update surgeon load
-    idx_s = (df_surgeon_load["surgeon_id"] == sid) & (df_surgeon_load["day"] == d) & (df_surgeon_load["shift"] == sh)
+    idx_s = (
+        (df_surgeon_load["surgeon_id"] == sid) &
+        (df_surgeon_load["day"] == d) &
+        (df_surgeon_load["shift"] == sh)
+    )
     df_surgeon_load.loc[idx_s, "used_min"] += dur_need
 
     # record assignment (store iteration and optional scores)
@@ -170,13 +186,13 @@ def commit_assignment(patient_row, best_row, iteration, w_patient=None, w_block=
     }
 
 
-
 def deadline_limit_from_priority(p):
-    return 3 if p==3 else (15 if p == 2 else (90 if p == 1 else 270))
+    return 3 if p == 3 else (15 if p == 2 else (90 if p == 1 else 270))
 
 def deadline_term(priority, waited):
     lim = deadline_limit_from_priority(priority)
-    if lim is None: return 0.0
+    if lim is None:
+        return 0.0
     days_left = max(0, lim - waited)
     return 1.0 - (days_left / lim)
 
@@ -185,9 +201,15 @@ def deadline_term(priority, waited):
 # INITIAL PLANNING STATE
 # ------------------------------
 df_capacity = df_rooms.copy()
-df_capacity["free_min"] = df_capacity["available"].apply(lambda a: C_PER_SHIFT if a == 1 else 0)
+df_capacity["free_min"] = df_capacity["available"].apply(
+    lambda a: C_PER_SHIFT if a == 1 else 0
+)
 
-df_assignments = pd.DataFrame(columns=["patient_id", "room", "day", "shift", "used_min", "surgeon_id", "iteration", "W_patient", "W_block"])
+df_assignments = pd.DataFrame(columns=[
+    "patient_id", "room", "day", "shift",
+    "used_min", "surgeon_id", "iteration",
+    "W_patient", "W_block"
+])
 
 df_surgeon_load = df_surgeons[["surgeon_id", "day", "shift"]].drop_duplicates().assign(used_min=0)
 
@@ -202,39 +224,68 @@ while True:
     iteration += 1
 
     # ---- Step 1: dynamic feasible blocks per patient (uses current capacity & surgeon load) ----
-    df_surg_open = df_surgeons[df_surgeons["available"] == 1][["surgeon_id", "day", "shift"]].drop_duplicates()
-    df_cap_open  = df_capacity[df_capacity["available"] == 1][["room", "day", "shift", "free_min"]].drop_duplicates()
-    df_sload     = df_surgeon_load[["surgeon_id","day","shift","used_min"]].drop_duplicates()
+    df_surg_open = df_surgeons[
+        df_surgeons["available"] == 1
+    ][["surgeon_id", "day", "shift"]].drop_duplicates()
+
+    df_cap_open  = df_capacity[
+        df_capacity["available"] == 1
+    ][["room", "day", "shift", "free_min"]].drop_duplicates()
+
+    df_sload     = df_surgeon_load[
+        ["surgeon_id", "day", "shift", "used_min"]
+    ].drop_duplicates()
     
-    df_pmini = remaining[["patient_id","surgeon_id","duration","priority","waiting"]].copy()
+    df_pmini = remaining[[
+        "patient_id", "surgeon_id", "duration", "priority", "waiting"
+    ]].copy()
+
+    if df_pmini.empty:
+        print("\nNo remaining patients — stopping.")
+        break
+
     df_pmini["need"] = df_pmini["duration"] + CLEANUP
     
     # (surgeon availability)
     df_p_time = df_pmini.merge(df_surg_open, on="surgeon_id", how="inner")
     
     # (join current room capacity)
-    df_p_cap = df_p_time.merge(df_cap_open, on=["day","shift"], how="inner")
+    df_p_cap = df_p_time.merge(df_cap_open, on=["day", "shift"], how="inner")
     
     # (current surgeon load per (day,shift))
-    df_p_cap = df_p_cap.merge(df_sload, on=["surgeon_id","day","shift"], how="left").fillna({"used_min":0})
+    df_p_cap = df_p_cap.merge(
+        df_sload, on=["surgeon_id", "day", "shift"], how="left"
+    ).fillna({"used_min": 0})
     
     # keep only blocks that can host the case now
-    df_p_blocks = df_p_cap[(df_p_cap["free_min"] >= df_p_cap["need"]) &
-                           ((df_p_cap["used_min"] + df_p_cap["need"]) <= C_PER_SHIFT)]
+    df_p_blocks = df_p_cap[
+        (df_p_cap["free_min"] >= df_p_cap["need"]) &
+        ((df_p_cap["used_min"] + df_p_cap["need"]) <= C_PER_SHIFT)
+    ]
     
     # count feasible blocks per patient
-    df_feas_count = (df_p_blocks.groupby("patient_id", as_index=False)
-                                .agg(feasible_blocks=("room","count")))
+    df_feas_count = (
+        df_p_blocks.groupby("patient_id", as_index=False)
+                   .agg(feasible_blocks=("room", "count"))
+    )
     
-    step1 = df_pmini.merge(df_feas_count, on="patient_id", how="left").fillna({"feasible_blocks":0})
+    step1 = df_pmini.merge(
+        df_feas_count, on="patient_id", how="left"
+    ).fillna({"feasible_blocks": 0})
 
+    # ---- Step 1: stop if nobody has feasible blocks
+    if step1["feasible_blocks"].fillna(0).max() == 0:
+        print("\nNo more schedulable patients under Step-1 filters.")
+        break
 
     # ---- Step 1 scoring
     Pmax = max(step1["priority"].max(), 1)
     Wmax = max(step1["waiting"].max(), 1)
     step1["term_priority"] = step1["priority"] / Pmax
     step1["term_waiting"]  = step1["waiting"] / Wmax
-    step1["term_deadline"] = step1.apply(lambda r: deadline_term(r["priority"], r["waiting"]), axis=1)
+    step1["term_deadline"] = step1.apply(
+        lambda r: deadline_term(r["priority"], r["waiting"]), axis=1
+    )
     step1["term_scarcity"] = 1.0 / (1.0 + step1["feasible_blocks"])
     step1["W_patient"] = (
           ALPHA1 * step1["term_priority"]
@@ -243,67 +294,76 @@ while True:
         + ALPHA4 * step1["term_scarcity"]
     )
 
-    # stop if no feasible patients remain
-    if step1["feasible_blocks"].fillna(0).max() == 0:
-        print("\nNo more schedulable patients under Step-1 filters.")
+    # ======== CORREÇÃO: varrer o ranking inteiro ========
+    made_assignment = False
+    step1_sorted = step1.sort_values("W_patient", ascending=False)
+
+    for _, patient_row in step1_sorted.iterrows():
+        # ---- Step 2: feasible blocks with current state
+        cand_blocks = feasible_blocks_step2(patient_row)
+        if cand_blocks.empty:
+            # não remover o paciente — apenas tentar o próximo do ranking
+            continue
+
+        # score and select best block
+        scored = score_block_for_patient(cand_blocks, patient_row, n_days=n_days)
+        best_block = scored.iloc[0]
+
+        # commit assignment and store iteration
+        patient_row = patient_row.copy()
+        patient_row["iteration"] = iteration
+        commit_assignment(
+            patient_row,
+            best_block,
+            iteration=iteration,
+            w_patient=float(patient_row["W_patient"]),
+            w_block=float(best_block["W_block"])
+        )
+
+        # remove scheduled patient from remaining
+        remaining = remaining[
+            remaining["patient_id"] != int(patient_row["patient_id"])
+        ]
+
+        # progress log
+        print(
+            f"Iter {iteration:02d}: "
+            f"Assign P{int(patient_row['patient_id'])} → "
+            f"(Room={int(best_block['room'])}, Day={int(best_block['day'])}, Shift={int(best_block['shift'])}), "
+            f"W_patient={patient_row['W_patient']:.4f}, W_block={best_block['W_block']:.3f}"
+        )
+
+        made_assignment = True
+        break  # uma atribuição por iteração
+
+    if not made_assignment:
+        print("\nNo assignable patients under current Step-1 ranking (all fail Step-2). Stopping.")
         break
-
-    # pick next patient (highest W_patient)
-    patient_row = step1.sort_values("W_patient", ascending=False).iloc[0]
-
-    # ---- Step 2: feasible blocks with current state
-    cand_blocks = feasible_blocks_step2(patient_row)
-    if cand_blocks.empty:
-        remaining = remaining[remaining["patient_id"] != patient_row["patient_id"]]
-        continue
-
-    # score and select best block
-    scored = score_block_for_patient(cand_blocks, patient_row, n_days=n_days)
-    best_block = scored.iloc[0]
-
-    # commit assignment and store iteration
-    patient_row = patient_row.copy()
-    patient_row["iteration"] = iteration
-    commit_assignment(
-        patient_row,
-        best_block,
-        iteration=iteration,
-        w_patient=float(patient_row["W_patient"]),
-        w_block=float(best_block["W_block"])
-    )
-
-
-    # remove scheduled patient
-    remaining = remaining[remaining["patient_id"] != patient_row["patient_id"]]
-
-    # progress log
-    print(f"Iter {iteration:02d}: "
-          f"Assign P{int(patient_row['patient_id'])} → "
-          f"(Room={int(best_block['room'])}, Day={int(best_block['day'])}, Shift={int(best_block['shift'])}), "
-          f"W_patient={patient_row['W_patient']:.4f}, W_block={best_block['W_block']:.3f}")
 
 print("\nFinal assignments:")
 print(df_assignments)
 
+
 # --------------------------------------------
 # SURGEONS: remaining free minutes per day/shift
 # --------------------------------------------
-# base: one row per surgeon/day/shift with availability
 df_surgeon_free = (
     df_surgeons[["surgeon_id", "day", "shift", "available"]]
     .drop_duplicates()
-    .merge(df_surgeon_load[["surgeon_id", "day", "shift", "used_min"]],
-           on=["surgeon_id", "day", "shift"], how="left")
+    .merge(
+        df_surgeon_load[["surgeon_id", "day", "shift", "used_min"]],
+        on=["surgeon_id", "day", "shift"],
+        how="left"
+    )
     .fillna({"used_min": 0})
 )
 
-# capacity is C_PER_SHIFT only if surgeon is available in that block
 df_surgeon_free["cap_min"]  = df_surgeon_free["available"] * C_PER_SHIFT
 df_surgeon_free["free_min"] = (df_surgeon_free["cap_min"] - df_surgeon_free["used_min"]).clip(lower=0)
 
-# utilization guard (avoid division by zero)
 df_surgeon_free["utilization"] = df_surgeon_free.apply(
-    lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0.0, axis=1
+    lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0.0,
+    axis=1
 )
 
 df_surgeon_free = df_surgeon_free.sort_values(["surgeon_id", "day", "shift"]).reset_index(drop=True)
@@ -315,14 +375,13 @@ print(df_surgeon_free.head(12))
 # --------------------------------------------
 # ROOMS: remaining free minutes per day/shift
 # --------------------------------------------
-# df_capacity already holds current free_min per (room,day,shift)
 df_room_free = df_capacity[["room", "day", "shift", "available", "free_min"]].copy()
 
-# derive used minutes and utilization
 df_room_free["cap_min"]   = df_room_free["available"] * C_PER_SHIFT
 df_room_free["used_min"]  = (df_room_free["cap_min"] - df_room_free["free_min"]).clip(lower=0)
 df_room_free["utilization"] = df_room_free.apply(
-    lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0.0, axis=1
+    lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0.0,
+    axis=1
 )
 
 df_room_free = df_room_free.sort_values(["room", "day", "shift"]).reset_index(drop=True)
@@ -334,7 +393,6 @@ print(df_room_free.head(12))
 # ============================================================
 # EXPORT PACK — build all relevant tables and write to Excel
 # ============================================================
-import pandas as pd
 from datetime import datetime
 
 # ---------- 0) helpers ----------
@@ -342,64 +400,34 @@ ts = datetime.now().strftime("%Y%m%d_%H%M")
 xlsx_path = f"or_schedule_export_{ts}.xlsx"
 
 # ---------- 1) Inputs (nice tabular forms) ----------
-# Patients input table (as read)
 inputs_patients = df_patients.sort_values("patient_id").copy()
-
-# Rooms availability (room/day/shift) as 0/1
 inputs_rooms = df_rooms.sort_values(["room", "day", "shift"]).copy()
-
-# Surgeons availability (surgeon/day/shift) as 0/1
 inputs_surgeons = df_surgeons.sort_values(["surgeon_id", "day", "shift"]).copy()
 
-# Optional: matrix-style pivots for human reading
 rooms_av_matrix = inputs_rooms.pivot_table(
     index=["room", "day"], columns="shift", values="available", aggfunc="first"
-).rename(columns={1:"AM", 2:"PM"}).reset_index()
+).rename(columns={1: "AM", 2: "PM"}).reset_index()
 
 surgeons_av_matrix = inputs_surgeons.pivot_table(
     index=["surgeon_id", "day"], columns="shift", values="available", aggfunc="first"
-).rename(columns={1:"AM", 2:"PM"}).reset_index()
+).rename(columns={1: "AM", 2: "PM"}).reset_index()
 
 # ---------- 2) Assignments enriched ----------
-# Join extra patient info to assignments
 assignments_enriched = df_assignments.merge(
     df_patients[["patient_id", "duration", "priority", "waiting"]],
-    on="patient_id", how="left"
+    on="patient_id",
+    how="left"
 ).sort_values("iteration")
 
-
-# Add a simple sequence number per (room,day,shift)
 assignments_enriched["seq_in_block"] = (
     assignments_enriched.groupby(["room", "day", "shift"]).cumcount() + 1
 )
 
 # ---------- 3) Capacity snapshots (final) ----------
-# Rooms: free/used/utilization after the loop
-rooms_free = df_capacity[["room", "day", "shift", "available", "free_min"]].copy()
-rooms_free["cap_min"] = rooms_free["available"] * C_PER_SHIFT
-rooms_free["used_min"] = (rooms_free["cap_min"] - rooms_free["free_min"]).clip(lower=0)
-rooms_free["utilization"] = rooms_free.apply(
-    lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0.0, axis=1
-)
-rooms_free = rooms_free.sort_values(["room", "day", "shift"]).reset_index(drop=True)
-
-# Surgeons: remaining capacity by day/shift
-surgeons_free = (
-    df_surgeons[["surgeon_id", "day", "shift", "available"]]
-    .drop_duplicates()
-    .merge(df_surgeon_load[["surgeon_id", "day", "shift", "used_min"]],
-           on=["surgeon_id", "day", "shift"], how="left")
-    .fillna({"used_min": 0})
-)
-surgeons_free["cap_min"]  = surgeons_free["available"] * C_PER_SHIFT
-surgeons_free["free_min"] = (surgeons_free["cap_min"] - surgeons_free["used_min"]).clip(lower=0)
-surgeons_free["utilization"] = surgeons_free.apply(
-    lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0.0, axis=1
-)
-surgeons_free = surgeons_free.sort_values(["surgeon_id", "day", "shift"]).reset_index(drop=True)
+rooms_free = df_room_free.copy()
+surgeons_free = df_surgeon_free.copy()
 
 # ---------- 4) KPIs / summaries ----------
-# Per-day KPIs (rooms)
 kpi_day_rooms = rooms_free.groupby("day", as_index=False).agg(
     open_blocks=("available", "sum"),
     cap_min=("cap_min", "sum"),
@@ -410,7 +438,6 @@ kpi_day_rooms["utilization"] = kpi_day_rooms.apply(
     lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0.0, axis=1
 )
 
-# Per-room KPIs (across all days/shifts)
 kpi_room = rooms_free.groupby("room", as_index=False).agg(
     open_blocks=("available", "sum"),
     cap_min=("cap_min", "sum"),
@@ -421,7 +448,6 @@ kpi_room["utilization"] = kpi_room.apply(
     lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0.0, axis=1
 )
 
-# Per-surgeon KPIs
 kpi_surgeon = surgeons_free.groupby("surgeon_id", as_index=False).agg(
     open_blocks=("available", "sum"),
     cap_min=("cap_min", "sum"),
@@ -432,12 +458,13 @@ kpi_surgeon["utilization"] = kpi_surgeon.apply(
     lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0.0, axis=1
 )
 
-# Global KPIs
 total_cap = rooms_free["cap_min"].sum()
 total_used = rooms_free["used_min"].sum()
 total_free = rooms_free["free_min"].sum()
 global_util = (total_used / total_cap) if total_cap > 0 else 0.0
+
 n_assigned = len(assignments_enriched)
+assigned_ids = set(assignments_enriched["patient_id"].unique())
 n_unassigned = len(df_patients) - n_assigned
 
 kpi_global = pd.DataFrame([{
@@ -450,31 +477,41 @@ kpi_global = pd.DataFrame([{
 }])
 
 # ---------- 5) Unassigned patients ----------
-# remaining holds the patients not scheduled by the loop
-unassigned_patients = remaining.sort_values("patient_id").copy() if len(remaining) else pd.DataFrame(
-    columns=df_patients.columns
-)
+unassigned_patients = df_patients[
+    ~df_patients["patient_id"].isin(assigned_ids)
+].sort_values("patient_id").copy()
 
-# Optional: show their feasible blocks at the end (static view)
-# (Rebuild Step-1 static feasibility just for these)
 if len(unassigned_patients):
-    blocks_open = df_rooms[df_rooms["available"] == 1][["room", "day", "shift"]].drop_duplicates()
-    surg_open   = df_surgeons[df_surgeons["available"] == 1][["surgeon_id", "day", "shift"]].drop_duplicates()
-    pmini_u = unassigned_patients[["patient_id", "surgeon_id", "duration"]].copy()
+    blocks_open = df_rooms[df_rooms["available"] == 1][
+        ["room", "day", "shift"]
+    ].drop_duplicates()
+    surg_open   = df_surgeons[df_surgeons["available"] == 1][
+        ["surgeon_id", "day", "shift"]
+    ].drop_duplicates()
+    pmini_u = unassigned_patients[[
+        "patient_id", "surgeon_id", "duration"
+    ]].copy()
     ptime_u = pmini_u.merge(surg_open, on="surgeon_id", how="inner")
     pblocks_u = ptime_u.merge(blocks_open, on=["day", "shift"], how="inner")
     pblocks_u["fits_shift"] = (pblocks_u["duration"] + CLEANUP) <= C_PER_SHIFT
     pblocks_u = pblocks_u[pblocks_u["fits_shift"]]
-    feas_u = (pblocks_u.groupby("patient_id", as_index=False)
-                        .agg(feasible_blocks=("room", "count")))
-    unassigned_patients = unassigned_patients.merge(feas_u, on="patient_id", how="left").fillna({"feasible_blocks":0})
+    feas_u = (
+        pblocks_u.groupby("patient_id", as_index=False)
+                 .agg(feasible_blocks=("room", "count"))
+    )
+    unassigned_patients = unassigned_patients.merge(
+        feas_u, on="patient_id", how="left"
+    ).fillna({"feasible_blocks": 0})
 
 # ---------- 6) Final block state (for audit) ----------
-# One row per (room, day, shift) with remaining minutes (already in rooms_free)
-# Join how many cases were assigned in each block
-cases_per_block = (assignments_enriched.groupby(["room","day","shift"], as_index=False)
-                                  .size().rename(columns={"size":"n_cases"}))
-final_blocks = rooms_free.merge(cases_per_block, on=["room","day","shift"], how="left").fillna({"n_cases":0})
+cases_per_block = (
+    assignments_enriched.groupby(["room", "day", "shift"], as_index=False)
+                       .size()
+                       .rename(columns={"size": "n_cases"})
+)
+final_blocks = rooms_free.merge(
+    cases_per_block, on=["room", "day", "shift"], how="left"
+).fillna({"n_cases": 0})
 
 # ---------- 7) Write everything to Excel ----------
 with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
@@ -499,46 +536,5 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
 
     # Unassigned (if any)
     unassigned_patients.to_excel(writer, sheet_name="Unassigned", index=False)
-
-# ---------- 8) TEXT-BASED SCHEDULE (for console & text file) ----------
-print("\n================= FINAL TEXT SCHEDULE =================\n")
-
-# only proceed if we have some assignments
-if len(assignments_enriched) == 0:
-    print("(No assignments found — nothing to display.)")
-else:
-    INCLUDE_CLEANUP_IN_TIMELINE = False  # change to True if you want cleanup gaps between surgeries
-
-    # Sort cases for consistent block order
-    assignments_sorted = assignments_enriched.sort_values(
-        ["room", "day", "shift", "seq_in_block", "iteration"]
-    )
-
-    blocks = []
-    for (r, d, sh), group in assignments_sorted.groupby(["room", "day", "shift"], sort=True):
-        entries = []
-        t = 0  # time tracker within the shift
-        for _, row in group.iterrows():
-            pid = int(row["patient_id"])
-            sid = int(row["surgeon_id"])
-            dur = int(row["duration"])
-            start = t
-            end = t + dur
-            entries.append(f"   (p={pid}, s={sid}, dur={dur}, start={start}, end={end})")
-            t = end + (CLEANUP if INCLUDE_CLEANUP_IN_TIMELINE else 0)
-
-        if entries:
-            header = f"B_{r}_{d}_{sh}:"
-            block_text = header + "\n" + "\n".join(entries)
-            blocks.append(block_text)
-
-    # Combine all blocks
-    schedule_text = "\n\n".join(blocks)
-    print(schedule_text)
-    Path("schedule_text_output.txt").write_text(schedule_text, encoding="utf-8")
-    print("\nSchedule saved to: schedule_text_output.txt")
-
-print("\n========================================================\n")
-
 
 print(f"\nExcel exported → {xlsx_path}")
