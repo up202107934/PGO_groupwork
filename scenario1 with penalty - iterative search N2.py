@@ -114,7 +114,7 @@ def feasible_blocks_step2(patient_row):
     # surgeon load within shift capacity
     surg_load = df_surgeon_load[df_surgeon_load["surgeon_id"] == sid][["day", "shift", "used_min"]]
     cand = cand.merge(surg_load, on=["day", "shift"], how="left").fillna({"used_min": 0})
-    cand = cand[(cand["used_min"] + need) <= C_PER_SHIFT]
+    cand = cand[(cand["used_min"] + need) <= C_PER_SHIFT + TOLERANCE]
 
     # continuity flag (already operating in same block)
     if len(df_assignments) > 0:

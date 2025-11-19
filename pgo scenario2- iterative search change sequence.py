@@ -109,27 +109,36 @@ def feasible_blocks_step2(patient_row):
     ]
     last_room = prev_assigns["room"].iloc[-1] if not prev_assigns.empty else None
 
-    # capacidade por bloco
+    # capacidade por bloco (inclui free_min)
     cap_ok = df_capacity[df_capacity["available"]==1].copy()
+
+    # ADICIONAR cap_min (porque df_capacity não tem esta coluna)
+    cap_ok["cap_min"] = C_PER_SHIFT
+
+    # need = duração + cleanup + mudança de sala se aplicável
     cap_ok["need"] = base_need
-    # adiciona ROOM_CHANGE_TIME se não for mesmo bloco
     cap_ok.loc[cap_ok["room"] != last_room, "need"] += ROOM_CHANGE_TIME
 
-    # filtra blocos com espaço suficiente
-    cand = cap_ok[cap_ok["free_min"] >= cap_ok["need"]]
+    # used_min do bloco ATUAL
+    cap_ok["used_min"] = cap_ok["cap_min"] - cap_ok["free_min"]
 
-    # combinar com disponibilidade do cirurgião
+    # juntar disponibilidade do cirurgião
     surg_ok = df_surgeons[
         (df_surgeons["surgeon_id"] == sid) & (df_surgeons["available"] == 1)
     ][["day","shift"]]
-    cand = cand.merge(surg_ok, on=["day","shift"], how="inner")
 
-    # carga do cirurgião no shift
-    sload = df_surgeon_load[df_surgeon_load["surgeon_id"]==sid][["day","shift","used_min"]]
-    cand = cand.merge(sload, on=["day","shift"], how="left").fillna({"used_min": 0})
-    cand = cand[(cand["used_min"] + cand["need"]) <= C_PER_SHIFT]
-    
-    # adicionar coluna continuity
+    cand = cap_ok.merge(surg_ok, on=["day","shift"], how="inner")
+
+    # juntar carga do cirurgião nesse dia/shift
+    sload = df_surgeon_load[df_surgeon_load["surgeon_id"] == sid][["day","shift","used_min"]]
+    sload = sload.rename(columns={"used_min": "surg_used"})
+    cand = cand.merge(sload, on=["day","shift"], how="left").fillna({"surg_used": 0})
+
+    # RESTRIÇÃO PRINCIPAL: respeitar capacidade + tolerância
+    cand = cand[(cand["used_min"] + cand["need"]) <= C_PER_SHIFT + TOLERANCE]
+    cand = cand[(cand["surg_used"] + cand["need"]) <= C_PER_SHIFT + TOLERANCE]
+
+    # continuidade: 1 se o cirurgião já operou nesse bloco
     if len(df_assignments) > 0:
         cont = df_assignments[df_assignments["surgeon_id"] == sid][["room","day","shift"]].copy()
         cont["continuity"] = 1
@@ -530,7 +539,6 @@ while True:
     
     # keep only blocks that can host the case now
     df_p_blocks = df_p_cap[
-    (df_p_cap["free_min"] >= df_p_cap["need"]) &
     ((df_p_cap["used_min"] + df_p_cap["need"]) <= C_PER_SHIFT + TOLERANCE) #NEW
     ]
 
@@ -946,8 +954,10 @@ if feas["feasibility_score"] == 0:
           "| util:", f"{ev['util_rooms']:.3f}",
           "| prio:", f"{ev['prio_rate']:.3f}",
           "| wait_term:", f"{ev['norm_wait_term']:.3f}")
-else:
-    print("Solution is infeasible (fix hard violations before comparing solutions).")
+
+    print("Feasibility penalty (soft):",
+          "excess_block_min =", feas["excess_block_min"],
+          "| excess_surgeon_min =", feas["excess_surgeon_min"])
 
 # EXCEL – folha de avaliação
 _eval_row = {

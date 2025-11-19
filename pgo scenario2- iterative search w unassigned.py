@@ -107,9 +107,10 @@ def feasible_blocks_step2(patient_row):
     ][["day", "shift"]]
 
     # rooms open with enough capacity
-    cap_ok = df_capacity[
-        (df_capacity["available"] == 1) & (df_capacity["free_min"] >= need_base)
-    ][["room", "day", "shift", "free_min"]]
+    cap_ok = df_capacity[df_capacity["available"] == 1].copy()
+    cap_ok["used_min_block"] = C_PER_SHIFT - cap_ok["free_min"]
+    cap_ok["cap_min"] = C_PER_SHIFT
+
 
     cand = surg_ok.merge(cap_ok, on=["day", "shift"], how="inner")
 
@@ -148,7 +149,7 @@ def feasible_blocks_step2(patient_row):
         cand["need"] = need_base # Nenhuma atribuição no sistema ainda
 
     # filter blocks that fit capacity
-    cand = cand[(cand["used_min"] + cand["need"]) <= C_PER_SHIFT]
+    cand = cand[(cand["used_min_block"] + cand["need"]) <= C_PER_SHIFT + TOLERANCE]
 
     # continuity flag (already operating in same block)
     if len(df_assignments) > 0:
@@ -596,7 +597,6 @@ while True:
     
     # keep only blocks that can host the case now
     df_p_blocks = df_p_cap[
-    (df_p_cap["free_min"] >= df_p_cap["need"]) &
     ((df_p_cap["used_min"] + df_p_cap["need"]) <= C_PER_SHIFT + TOLERANCE) #NEW
     ]
 
@@ -997,8 +997,10 @@ if feas["feasibility_score"] == 0:
           "| util:", f"{ev['util_rooms']:.3f}",
           "| prio:", f"{ev['prio_rate']:.3f}",
           "| wait_term:", f"{ev['norm_wait_term']:.3f}")
-else:
-    print("Solution is infeasible (fix hard violations before comparing solutions).")
+
+    print("Feasibility penalty (soft):",
+          "excess_block_min =", feas["excess_block_min"],
+          "| excess_surgeon_min =", feas["excess_surgeon_min"])
 
 # EXCEL – folha de avaliação
 _eval_row = {
