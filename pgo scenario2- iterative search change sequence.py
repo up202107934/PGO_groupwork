@@ -16,7 +16,7 @@ import pandas as pd
 DATA_FILE = "instance_c1_30.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
-CLEANUP = 17        # cleaning time
+CLEANUP = 17        # cleaning time 
 
 ALPHA1 = 0.25  # priority
 ALPHA2 = 0.25  # waited days
