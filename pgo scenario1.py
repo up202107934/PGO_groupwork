@@ -10,10 +10,24 @@ import ast
 import pandas as pd
 from datetime import datetime
 
+
+"""" O ficheiro implementa o algoritmo de despacho em duas etapas (Step 1 + Step 2) para o problema de escalonamento de cirurgias em blocos operatórios:
+
+Step 1 – escolher o próximo doente (dispatching rule ao nível do doente):avalia todos os doentes ainda por agendar, calcula um peso W_patient com base em prioridade, dias de espera, proximidade do deadline e escassez de blocos, ordena os doentes por esse peso.
+
+Step 2 – escolher o melhor bloco para esse doente (dispatching rule ao nível do bloco/sala): para o doente escolhido, identifica todos os blocos (sala, dia, turno) em que ele é viável, aplica a regra do Cenário 1: se o cirurgião já estiver a operar num certo (dia, turno), tem de ficar na mesma sala durante esse turno,
+calcula um peso W_block para cada bloco viável (encaixe, precocidade, continuidade),escolhe o bloco com maior W_block e fixa a cirurgia lá.
+
+Repete esse ciclo até já não haver mais doentes que caibam em nenhum bloco.
+
+No fim, calcula KPIs (utilização, capacidade usada, doentes agendados/por agendar) e exporta tudo para um ficheiro Excel.
+"""
+
+
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "instance_c1_30.dat"
+DATA_FILE = "Instance_C1_30.DAT"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time
@@ -36,6 +50,7 @@ def get_int(name, alt_name=None):
     if not m:
         raise ValueError(f"Integer '{name}' not found in {DATA_FILE}")
     return int(m.group(1))
+
 
 def get_array(name):
     m = re.search(rf'{name}\s*=\s*(\[[\s\S]*?\])\s*;', text, re.DOTALL)
@@ -63,7 +78,7 @@ surg_av = get_array("SurgeonAvailability")
 # DATAFRAMES
 # ------------------------------
 # Patients
-df_patients = pd.DataFrame({
+df_patients = pd.DataFrame({                            #cria um dataframe com o id do paciente, com a respetiva duração estimada, prioridade, tempo que já esperou e o cirurugião alocado
     "patient_id": range(1, n_patients + 1),
     "duration": durations,
     "priority": priorities,
@@ -71,9 +86,11 @@ df_patients = pd.DataFrame({
     "surgeon_id": surgeons
 })
 
+
+
 # Rooms
 rows = []
-for r in range(n_rooms):
+for r in range(n_rooms):                               #passar a matriz do block availability para um datframe -> room;day;shift;avalilabe    
     for d in range(n_days):
         for shift in (1, 2):  # 1=AM, 2=PM
             available = int(block_av[d][r][shift - 1])
@@ -82,7 +99,7 @@ df_rooms = pd.DataFrame(rows)
 
 # Surgeons
 rows = []
-for s in range(n_surgeons):
+for s in range(n_surgeons):                         #passar a matriz do surg_av para um dataframe -> surgeon_id;day;shift;available
     for d in range(n_days):
         for shift in (1, 2):
             availability = int(surg_av[s][d][shift - 1])
@@ -110,10 +127,10 @@ df_capacity = df_rooms.copy()
 df_capacity["free_min"] = df_capacity["available"].apply(lambda a: C_PER_SHIFT if a == 1 else 0)
 
 df_assignments = pd.DataFrame(
-    columns=["patient_id", "room", "day", "shift", "used_min", "surgeon_id", "iteration", "W_patient", "W_block"]
+    columns=["patient_id", "room", "day", "shift", "used_min", "surgeon_id", "iteration", "W_patient", "W_block"]    #Tabela vazia onde vamos registar todas as consultas
 )
 
-df_surgeon_load = df_surgeons[["surgeon_id", "day", "shift"]].drop_duplicates().assign(used_min=0)
+df_surgeon_load = df_surgeons[["surgeon_id", "day", "shift"]].drop_duplicates().assign(used_min=0)                   #Adicionar used_min ao df_surgeons para percebermos quantos minutos cada cirurgão já trabalhou num determiando dia, num determinado turno.
 
 # ------------------------------
 # STEP 2 SUPPORT FUNCTIONS (Scenario 1 lock)
@@ -127,19 +144,19 @@ def feasible_blocks_step2(patient_row):
     need = int(patient_row["duration"]) + CLEANUP
 
     # surgeon availability (day, shift)
-    surg_ok = df_surgeons[(df_surgeons["surgeon_id"] == sid) & (df_surgeons["available"] == 1)][["day", "shift"]].drop_duplicates()
+    surg_ok = df_surgeons[(df_surgeons["surgeon_id"] == sid) & (df_surgeons["available"] == 1)][["day", "shift"]].drop_duplicates()     #ver os dias e os turnos em que existem cirurgiões diposniveis para oa paciente ecnontrado no step1
 
     # rooms open with enough capacity
     cap_ok = df_capacity[(df_capacity["available"] == 1) & (df_capacity["free_min"] >= need)][["room", "day", "shift", "free_min"]].drop_duplicates()
 
-    cand = surg_ok.merge(cap_ok, on=["day", "shift"], how="inner")
+    cand = surg_ok.merge(cap_ok, on=["day", "shift"], how="inner")                               #Ficar so com os dados de quando o cirurgiao esta disponivel e existe blocos disponiveis
 
     # surgeon load guard within shift capacity
     surg_load = df_surgeon_load[df_surgeon_load["surgeon_id"] == sid][["day", "shift", "used_min"]]
-    cand = cand.merge(surg_load, on=["day", "shift"], how="left").fillna({"used_min": 0})
-    cand = cand[(cand["used_min"] + need) <= C_PER_SHIFT]
+    cand = cand.merge(surg_load, on=["day", "shift"], how="left").fillna({"used_min": 0})                   
+    cand = cand[(cand["used_min"] + need) <= C_PER_SHIFT]                                        #(minutos já usados pelo cirurgião no turno) + (minutos necessários para este doente) ≤ 360
 
-    # Scenario 1: lock to room if surgeon already operating in that (day, shift)
+    # Scenario 1: lock to room if surgeon already operating in that (day, shift) -> Isto garante que, se o cirurgião já está a operar numa sala naquele turno, todas as outras cirurgias nesse turno vão para a mesma sala.            
     if len(df_assignments) > 0:
         locks = (
             df_assignments[df_assignments["surgeon_id"] == sid]
@@ -152,16 +169,16 @@ def feasible_blocks_step2(patient_row):
         cand = cand.drop(columns=["room_locked"])
 
         # continuity flag if already in same block
-        cont = df_assignments[df_assignments["surgeon_id"] == sid][["room", "day", "shift"]].drop_duplicates()
+        cont = df_assignments[df_assignments["surgeon_id"] == sid][["room", "day", "shift"]].drop_duplicates() #Extrair cont com as combinações (room, day, shift) onde ele já foi marcado
         cont["continuity"] = 1
-        cand = cand.merge(cont, on=["room", "day", "shift"], how="left")
-        cand["continuity"] = cand["continuity"].fillna(0).astype(int)
+        cand = cand.merge(cont, on=["room", "day", "shift"], how="left")          # as linhas que batem certo com (room, day, shift) recebem 1; as outras ficam Na
+        cand["continuity"] = cand["continuity"].fillna(0).astype(int)             
     else:
-        cand["continuity"] = 0
+        cand["continuity"] = 0   # Se não há cirurgia continuity =0
 
     return cand
 
-def score_block_for_patient(cand_df, patient_row, n_days):
+def score_block_for_patient(cand_df, patient_row, n_days):  #calcula o W_block de cada bloco candidato
     """Compute W_block for each candidate block."""
     need = int(patient_row["duration"]) + CLEANUP
     day_max = max(1, n_days - 1)
@@ -173,7 +190,7 @@ def score_block_for_patient(cand_df, patient_row, n_days):
     df["W_block"] = df["term_fit"] + df["term_early"] + df["term_cont"]
     return df.sort_values("W_block", ascending=False)
 
-def commit_assignment(patient_row, best_row, iteration, w_patient=None, w_block=None):
+def commit_assignment(patient_row, best_row, iteration, w_patient=None, w_block=None):   # atualiza o estado (capacidade + carga do cirurgião) e regista a cirurgia
     """Update capacity, surgeon-load, and record assignment with iteration order."""
     pid = int(patient_row["patient_id"])
     sid = int(patient_row["surgeon_id"])
@@ -186,7 +203,7 @@ def commit_assignment(patient_row, best_row, iteration, w_patient=None, w_block=
 
     # update surgeon load
     idx_s = (df_surgeon_load["surgeon_id"] == sid) & (df_surgeon_load["day"] == d) & (df_surgeon_load["shift"] == sh)
-    df_surgeon_load.loc[idx_s, "used_min"] += dur_need
+    df_surgeon_load.loc[idx_s, "used_min"] += dur_need   #adiciona os minutos da respetiva cirurgia ao cirurgião
 
     # record assignment
     df_assignments.loc[len(df_assignments)] = {
@@ -207,8 +224,8 @@ def commit_assignment(patient_row, best_row, iteration, w_patient=None, w_block=
 remaining = df_patients.copy()
 iteration = 0
 
-while True:
-    iteration += 1
+while True:                          # ciclo infinito que só é parado com break quando já não for possível marcar mais cirurgias
+    iteration += 1   
 
     # ---- Step 1: dynamic feasible blocks per patient (with Scenario 1 lock) ----
     df_surg_open = df_surgeons[df_surgeons["available"] == 1][["surgeon_id", "day", "shift"]].drop_duplicates()
@@ -219,10 +236,10 @@ while True:
     df_pmini["need"] = df_pmini["duration"] + CLEANUP
 
     # (surgeon availability)
-    df_p_time = df_pmini.merge(df_surg_open, on="surgeon_id", how="inner")
+    df_p_time = df_pmini.merge(df_surg_open, on="surgeon_id", how="inner")   # O paciente fica com todas as combinações de (day, shift) onde o seu cirurgião está disponível
 
     # (join current room capacity)
-    df_p_cap = df_p_time.merge(df_cap_open, on=["day", "shift"], how="inner")
+    df_p_cap = df_p_time.merge(df_cap_open, on=["day", "shift"], how="inner")  #Agora restringimos ainda mais para quando existem blocos e cirurgião dipsonivel
 
     # (current surgeon load per (day,shift))
     df_p_cap = df_p_cap.merge(df_sload, on=["surgeon_id", "day", "shift"], how="left").fillna({"used_min": 0})
@@ -235,13 +252,13 @@ while True:
 
     # Scenario 1 lock also in Step 1 feasibility counting
     if len(df_assignments) > 0:
-        locks_all = (
+        locks_all = (                                                            # este locks_all diz, para cada (cirurgião, dia, turno), se ele já está associado a uma sala
             df_assignments.loc[:, ["surgeon_id", "day", "shift", "room"]]
             .drop_duplicates()
             .rename(columns={"room": "room_locked"})
         )
         df_p_blocks = df_p_blocks.merge(locks_all, on=["surgeon_id", "day", "shift"], how="left")
-        df_p_blocks = df_p_blocks[(df_p_blocks["room_locked"].isna()) | (df_p_blocks["room"] == df_p_blocks["room_locked"])]
+        df_p_blocks = df_p_blocks[(df_p_blocks["room_locked"].isna()) | (df_p_blocks["room"] == df_p_blocks["room_locked"])]     #se o cirurgião ainda não tem sala naquele turno, entao qualquer sala serve. Caso contrário fica bloqueado a essa sala
         df_p_blocks = df_p_blocks.drop(columns=["room_locked"])
 
     # count feasible blocks per patient (after lock)
