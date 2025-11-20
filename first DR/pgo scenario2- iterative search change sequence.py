@@ -293,7 +293,7 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
         "rooms_cap_join": rooms_join
     }
 
-def evaluate_schedule(assignments, patients, rooms_free, weights=(0.4, 0.3, 0.2, 0.1)):
+def evaluate_schedule(assignments, patients, rooms_free,excess_block_min, weights=(0.4, 0.3, 0.2, 0.1)):
     w1, w2, w3, w4 = weights
     total_patients = len(patients)
     ratio_scheduled = (len(assignments) / total_patients) if total_patients else 0.0
@@ -312,7 +312,7 @@ def evaluate_schedule(assignments, patients, rooms_free, weights=(0.4, 0.3, 0.2,
         prio_rate = 0.0
         norm_wait_term = 0.0
 
-    score = (w1*ratio_scheduled + w2*util_rooms + w3*prio_rate + w4*norm_wait_term)
+    score = (w1*ratio_scheduled + w2*util_rooms + w3*prio_rate + w4*norm_wait_term)-0.001* excess_block_min
     return {"score":float(score), "ratio_scheduled":float(ratio_scheduled),
             "util_rooms":float(util_rooms), "prio_rate":float(prio_rate),
             "norm_wait_term":float(norm_wait_term)}
@@ -423,10 +423,14 @@ def local_search_iterated(assign_init, df_rooms, df_surgeons, patients, C_PER_SH
 
     feas = feasibility_metrics(current, df_rooms, df_surgeons, patients, C_PER_SHIFT)
     best_feas = feas["feasibility_score"]
-    if best_feas == 0:
-        best_score = evaluate_schedule(current, patients, rooms_join)["score"]
-    else:
-        best_score = -best_feas
+    feas_current = feasibility_metrics(current, df_rooms, df_surgeons, patients, C_PER_SHIFT)
+
+    best_score = evaluate_schedule(
+        current,
+        patients,
+        rooms_join,
+        feas_current["excess_block_min"]
+    )["score"]
 
     print(f"\nLS START — score inicial={best_score:.4f}, infeas={best_feas}")
 
@@ -454,10 +458,14 @@ def local_search_iterated(assign_init, df_rooms, df_surgeons, patients, C_PER_SH
         rooms_join_c["used_min"] = rooms_join_c["used_min"].clip(lower=0)
         rooms_join_c["utilization"] = rooms_join_c.apply(lambda r: (r["used_min"]/r["cap_min"]) if r["cap_min"]>0 else 0.0, axis=1)
 
-        if feas_c["feasibility_score"] == 0:
-            cand_score = evaluate_schedule(candidate, patients, rooms_join_c)["score"]
-        else:
-            cand_score = -feas_c["feasibility_score"]
+        feas_current = feasibility_metrics(candidate, df_rooms, df_surgeons, patients, C_PER_SHIFT)
+
+        cand_score = evaluate_schedule(
+            candidate,
+            patients,
+            rooms_join_c,
+            feas_current["excess_block_min"]
+        )["score"]
 
 
         if cand_score > best_score:
@@ -647,13 +655,13 @@ while True:
 # ========================
 # LOCAL SEARCH ITERATED NEW
 # ========================
-#print("\n>> Running local search iterated (swap_with_unassigned_random only)...")
-#best_assignments, best_score, best_feas = local_search_iterated(
-#    df_assignments, df_rooms, df_surgeons, df_patients, C_PER_SHIFT, max_no_improv=200
-#)
+print("\n>> Running local search iterated (swap_with_unassigned_random only)...")
+best_assignments, best_score, best_feas = local_search_iterated(
+    df_assignments, df_rooms, df_surgeons, df_patients, C_PER_SHIFT, max_no_improv=200
+)
 
-#print("\nLocal search finished:",
-#      f"best_score={best_score:.4f}, best_feas={best_feas}")
+print("\nLocal search finished:",
+     f"best_score={best_score:.4f}, best_feas={best_feas}")
 
 # usar a solução melhorada (ou manter original se não melhorou)
 #if len(best_assignments):
@@ -930,17 +938,26 @@ feas = feasibility_metrics(
     C_PER_SHIFT=C_PER_SHIFT
 )
 
+# ------- SCORE INICIAL -------
+initial_eval = evaluate_schedule(df_assignments, df_patients, df_room_free, feas["excess_block_min"])
+
+print("\nINITIAL SCORE:", initial_eval["score"])
+# ------- FINAL SCORE -------
+final_eval = evaluate_schedule(df_assignments, df_patients, df_room_free, feas["excess_block_min"])
+
+
 print("\nFeasibility:", feas["feasibility_score"],
       "| unassigned:", feas["n_unassigned"],
       "| block_closed:", feas["block_unavailable_viol"],
       "| surg_unavail:", feas["surg_unavailable_viol"],
       "| excess_block_min:", feas["excess_block_min"],
-      "| excess_surgeon_min:", feas["excess_surgeon_min"])
+      "| excess_surgeon_min:", feas["excess_surgeon_min"],)
 
 # EVALUATE QUALITY
 ev = {}
 if feas["feasibility_score"] == 0:
     ev = evaluate_schedule(df_assignments, df_patients, rooms_free)
+   
     print("Evaluation score:", f"{ev['score']:.4f}",
           "| scheduled:", f"{ev['ratio_scheduled']:.3f}",
           "| util:", f"{ev['util_rooms']:.3f}",
