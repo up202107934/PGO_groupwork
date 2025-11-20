@@ -23,8 +23,8 @@ ALPHA2 = 0.25  # waited days
 ALPHA3 = 0.25  # deadline closeness
 ALPHA4 = 0.25  # feasible blocks
 
-ALPHA5 = 0.25  
-ALPHA6 = 0.25  
+ALPHA5 = 0.25  # priority
+ALPHA6 = 0.25  # waited days
 ALPHA7 = 0.25 
 
 TOLERANCE = 15  #we allow 15 minutes delays after end time of each block
@@ -318,6 +318,84 @@ def evaluate_schedule(assignments, patients, rooms_free, excess_block_min, weigh
             "util_rooms":float(util_rooms), "prio_rate":float(prio_rate),
             "norm_wait_term":float(norm_wait_term)}
 
+
+def generate_neighbor_swap(current_assignments,
+                           df_patients,
+                           df_rooms,
+                           df_surgeons,
+                           C_PER_SHIFT,
+                           max_swap_out=10,
+                           max_swap_in=3):
+    """
+    Gera um vizinho da solução atual e devolve também:
+      - ids_out: lista de pacientes retirados
+      - ids_in_effective: lista de pacientes que foram mesmo adicionados
+    """
+
+    # cópia para não estragar o original
+    assignments = current_assignments.copy()
+
+    # pacientes atualmente agendados
+    scheduled_ids = assignments["patient_id"].unique().tolist()
+    if len(scheduled_ids) == 0:
+        return assignments, [], []  # não há nada para mexer
+
+    # pacientes não agendados = todos - scheduled
+    all_ids = df_patients["patient_id"].unique().tolist()
+    unassigned_ids = [pid for pid in all_ids if pid not in scheduled_ids]
+
+    # 1) REMOVER I (até max_swap_out)
+    k_out = min(max_swap_out, len(scheduled_ids))
+    ids_out = random.sample(scheduled_ids, k_out)
+    assignments = assignments[~assignments["patient_id"].isin(ids_out)].copy()
+
+    # 2) ADICIONAR J (até max_swap_in)
+    random.shuffle(unassigned_ids)
+    ids_in_candidates = unassigned_ids[:max_swap_in]
+
+    ids_in_effective = []   # <- aqui vamos guardar só os que entram MESMO
+
+    for pid in ids_in_candidates:
+        prow = df_patients[df_patients["patient_id"] == pid]
+        if prow.empty:
+            continue
+        prow = prow.iloc[0]
+
+        # blocos viáveis dado o assignments ATUAL
+        cand_blocks = candidate_blocks_for_patient_in_solution(
+            assignments, prow, df_rooms, df_surgeons, C_PER_SHIFT
+        )
+        if len(cand_blocks) == 0:
+            continue
+
+        chosen = cand_blocks.sample(1).iloc[0]
+        room = int(chosen["room"])
+        day = int(chosen["day"])
+        shift = int(chosen["shift"])
+        dur = int(prow["duration"])
+        sid = int(prow["surgeon_id"])
+        need = dur + CLEANUP
+
+        new_row = {
+            "patient_id": pid,
+            "room": room,
+            "day": day,
+            "shift": shift,
+            "used_min": need,
+            "surgeon_id": sid,
+            "iteration": -1,      # marca que veio do ILS
+            "W_patient": 0.0,     # podes recalcular se quiseres
+            "W_block": 0.0,
+        }
+
+        assignments = pd.concat(
+            [assignments, pd.DataFrame([new_row])],
+            ignore_index=True
+        )
+
+        ids_in_effective.append(pid)   # <- este entrou mesmo
+
+    return assignments, ids_out, ids_in_effective
 
 
 
@@ -710,7 +788,7 @@ while True:
         break
 
 
-# ---------- 2) Assignments enriched ----------
+# ---------- 2) Assignments enriched (sequencing) ----------
 assignments_enriched = df_assignments.merge(
     df_patients[["patient_id", "duration", "priority", "waiting"]],
     on="patient_id",
@@ -736,22 +814,205 @@ assignments_dropped_by_seq = assignments_enriched[
 ].sort_values(
     ["day", "shift", "room", "patient_id"]
 ).reset_index(drop=True)
+    
+# ---------- GUARDAR SOLUÇÃO INICIAL (ANTES DO ILS) ----------
+initial_assignments_enriched = assignments_enriched.copy()
+initial_assignments_seq = assignments_seq_view.copy()
+
+# capacidades iniciais por bloco e por cirurgião
+initial_rooms_free = build_room_free_from_assignments(
+    assignments=initial_assignments_seq,
+    df_rooms=df_rooms,
+    C_PER_SHIFT=C_PER_SHIFT
+)
+
+initial_surgeons_free = build_surgeon_free_from_assignments(
+    assignments=initial_assignments_seq,
+    df_surgeons=df_surgeons,
+    C_PER_SHIFT=C_PER_SHIFT
+)
+
+# feasibility + evaluation da solução inicial
+initial_feas = feasibility_metrics(
+    assignments=initial_assignments_seq,
+    df_rooms=df_rooms,
+    df_surgeons=df_surgeons,
+    patients=df_patients,
+    C_PER_SHIFT=C_PER_SHIFT
+)
+
+initial_eval = evaluate_schedule(
+    assignments=initial_assignments_seq,
+    patients=df_patients,
+    rooms_free=initial_rooms_free,
+    excess_block_min=initial_feas["excess_block_min"]
+)
+
+    
+# =========================================================
+#        ITERATED LOCAL SEARCH (SIMPLIFICADO)
+# =========================================================
+
+N_ILS_ITER = 30
+MAX_SWAP_OUT = 2
+MAX_SWAP_IN  = 2
+
+# 1) SOLUÇÃO CORRENTE = SOLUÇÃO INICIAL (DEPOIS DO HEURÍSTICO)
+current_assignments = df_assignments.copy()
+
+# Função auxiliar: corre TODA a pipeline do teu código:
+def full_evaluation(assignments):
+    # 1) Merge com pacientes
+    enriched = assignments.merge(
+        df_patients[["patient_id","duration","priority","waiting"]],
+        on="patient_id",
+        how="left"
+    )
+
+    # 2) Sequenciamento (resolve overlap + tira cirurgias problemáticas)
+    enriched = sequence_global_by_surgeon(
+        enriched,
+        C_PER_SHIFT=C_PER_SHIFT,
+        CLEANUP=CLEANUP,
+        TOLERANCE=TOLERANCE
+    )
+
+    seq = enriched[enriched["scheduled_by_seq"]==1].copy()
+
+    # 3) Recalcular rooms_free
+    rooms_free = build_room_free_from_assignments(seq, df_rooms, C_PER_SHIFT)
+
+    # 4) Feasibility
+    feas = feasibility_metrics(
+        assignments=seq,
+        df_rooms=df_rooms,
+        df_surgeons=df_surgeons,
+        patients=df_patients,
+        C_PER_SHIFT=C_PER_SHIFT
+    )
+
+    # 5) Evaluation (A TUA FUNÇÃO)
+    ev = evaluate_schedule(
+        assignments=seq,
+        patients=df_patients,
+        rooms_free=rooms_free,
+        excess_block_min=feas["excess_block_min"]
+    )
+
+    return ev["score"], seq, rooms_free, feas, enriched
+
+
+# Avaliar solução inicial
+current_score, current_seq, current_rooms_free, current_feas, _ = full_evaluation(current_assignments)
+
+best_score = current_score
+best_assignments = current_assignments.copy()
+best_seq = current_seq.copy()
+best_rooms_free = current_rooms_free.copy()
+best_feas = current_feas  
+
+print("\nILS START")
+print("Initial score:", current_score)
+
+for it in range(N_ILS_ITER):
+
+    # Gerar vizinho (swap i↔j)
+    neighbor, ids_out, ids_in = generate_neighbor_swap(
+        current_assignments,
+        df_patients,
+        df_rooms,
+        df_surgeons,
+        C_PER_SHIFT,
+        max_swap_out=MAX_SWAP_OUT,
+        max_swap_in=MAX_SWAP_IN
+    )
+
+    neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
+
+    # Aceitar se SCORE melhorar
+    if neigh_score > current_score:
+        current_assignments = neighbor.copy()
+        current_score = neigh_score
+
+        # Atualizar melhor global
+        if neigh_score > best_score:
+            best_score = neigh_score
+            best_assignments = neighbor.copy()
+            best_seq = neigh_seq.copy()
+            best_rooms_free = neigh_rooms_free.copy()
+            best_feas = neigh_feas 
+
+        print(f"[Iter {it}] Improved score to {current_score:.4f} | "
+              f"removed={ids_out} | added={ids_in}")
+    else:
+       None
+       
+
+# ============================================================
+#     CONSTRUIR A SOLUÇÃO FINAL (COM SEQUENCIAMENTO)
+# ============================================================
+
+# 1) Merge com pacientes
+best_assignments_enriched = best_assignments.merge(
+    df_patients[["patient_id","duration","priority","waiting"]],
+    on="patient_id",
+    how="left"
+)
+
+# 2) Sequenciamento final (trata overlaps e scheduled_by_seq)
+best_assignments_enriched = sequence_global_by_surgeon(
+    best_assignments_enriched,
+    C_PER_SHIFT=C_PER_SHIFT,
+    CLEANUP=CLEANUP,
+    TOLERANCE=TOLERANCE
+)
+
+# 3) Cirurgias que ficam na solução final
+best_assignments_seq = best_assignments_enriched[
+    best_assignments_enriched["scheduled_by_seq"] == 1
+].sort_values(["day","shift","room","seq_in_block"]).reset_index(drop=True)
+
+# 4) Cirurgias removidas pelo sequenciador
+best_assignments_dropped = best_assignments_enriched[
+    best_assignments_enriched["scheduled_by_seq"] == 0
+].sort_values(["day","shift","room"]).reset_index(drop=True)
+
+# 5) Recalcular rooms_free (já tens best_rooms_free mas confirmamos)
+best_rooms_free = build_room_free_from_assignments(
+    assignments=best_assignments_seq,
+    df_rooms=df_rooms,
+    C_PER_SHIFT=C_PER_SHIFT
+)
+
+# 6) Recalcular surgeons_free
+best_surgeon_free = build_surgeon_free_from_assignments(
+    assignments=best_assignments_seq,
+    df_surgeons=df_surgeons,
+    C_PER_SHIFT=C_PER_SHIFT
+)
+
+          
+# A PARTIR DE AGORA, USAMOS A MELHOR SOLUÇÃO DO ILS
+assignments_enriched = best_assignments_enriched.copy()
+assignments_seq_view = best_assignments_seq.copy()
+df_room_free = best_rooms_free.copy()
+df_surgeon_free = best_surgeon_free.copy()
 
 
 # --------------------------------------------
 # RECOMPUTE room/surgeon usage based on sequenced assignments
 # --------------------------------------------
-df_room_free = build_room_free_from_assignments(
-    assignments=assignments_seq_view,
-    df_rooms=df_rooms,
-    C_PER_SHIFT=C_PER_SHIFT
-)
+#df_room_free = build_room_free_from_assignments(
+#    assignments=assignments_seq_view,
+#    df_rooms=df_rooms,
+#    C_PER_SHIFT=C_PER_SHIFT
+#)
 
-df_surgeon_free = build_surgeon_free_from_assignments(
-    assignments=assignments_seq_view,
-    df_surgeons=df_surgeons,
-    C_PER_SHIFT=C_PER_SHIFT
-)
+#df_surgeon_free = build_surgeon_free_from_assignments(
+#    assignments=assignments_seq_view,
+#    df_surgeons=df_surgeons,
+ #   C_PER_SHIFT=C_PER_SHIFT
+#)
 
 
 # ============================================================
@@ -833,6 +1094,9 @@ kpi_global = pd.DataFrame([{
     "unassigned_patients": n_unassigned
 }])
 
+
+
+
 # ---------- 5) Unassigned patients ----------
 unassigned_patients = df_patients[
     ~df_patients["patient_id"].isin(assigned_ids)
@@ -879,24 +1143,40 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
     rooms_av_matrix.to_excel(writer, sheet_name="Rooms_Availability_Matrix", index=False)
     surgeons_av_matrix.to_excel(writer, sheet_name="Surgeons_Availability_Matrix", index=False)
 
-    # Results
-    assignments_enriched.to_excel(writer, sheet_name="Assignments", index=False)
-    assignments_seq_view.to_excel(writer, sheet_name="Assignments_Sequenced", index=False)
-    final_blocks.to_excel(writer, sheet_name="Blocks_FinalState", index=False)
-    rooms_free.to_excel(writer, sheet_name="Rooms_Free", index=False)
-    surgeons_free.to_excel(writer, sheet_name="Surgeons_Free", index=False)
+    # ============ RESULTS – SOLUÇÃO INICIAL (heurístico) ============
+    initial_assignments_enriched.to_excel(
+        writer, sheet_name="Assignments_Initial", index=False
+    )
+    initial_assignments_seq.to_excel(
+        writer, sheet_name="Assignments_Sequenced_Initial", index=False
+    )
+    initial_rooms_free.to_excel(
+        writer, sheet_name="Rooms_Free_Initial", index=False
+    )
+    initial_surgeons_free.to_excel(
+        writer, sheet_name="Surgeons_Free_Initial", index=False
+    )
 
-    # KPIs
-    kpi_global.to_excel(writer, sheet_name="KPI_Global", index=False)
-    kpi_day_rooms.to_excel(writer, sheet_name="KPI_PerDay", index=False)
-    kpi_room.to_excel(writer, sheet_name="KPI_PerRoom", index=False)
-    kpi_surgeon.to_excel(writer, sheet_name="KPI_PerSurgeon", index=False)
-    
+    # ============ RESULTS – SOLUÇÃO FINAL (ILS) ============
+    assignments_enriched.to_excel(
+        writer, sheet_name="Assignments_ILS", index=False
+    )
+    assignments_seq_view.to_excel(
+        writer, sheet_name="Assignments_Sequenced_ILS", index=False
+    )
+    final_blocks.to_excel(writer, sheet_name="Blocks_FinalState_ILS", index=False)
+    rooms_free.to_excel(writer, sheet_name="Rooms_Free_ILS", index=False)
+    surgeons_free.to_excel(writer, sheet_name="Surgeons_Free_ILS", index=False)
 
+    # KPIs (já estão calculados para a solução final)
+    kpi_global.to_excel(writer, sheet_name="KPI_Global_ILS", index=False)
+    kpi_day_rooms.to_excel(writer, sheet_name="KPI_PerDay_ILS", index=False)
+    kpi_room.to_excel(writer, sheet_name="KPI_PerRoom_ILS", index=False)
+    kpi_surgeon.to_excel(writer, sheet_name="KPI_PerSurgeon_ILS", index=False)
 
+    # Unassigned (da solução final)
+    unassigned_patients.to_excel(writer, sheet_name="Unassigned_ILS", index=False)
 
-    # Unassigned (if any)
-    unassigned_patients.to_excel(writer, sheet_name="Unassigned", index=False)
 
 #print(f"\nExcel exported → {xlsx_path}")
 
@@ -961,6 +1241,15 @@ initial_eval = evaluate_schedule(
     excess_block_min=feas["excess_block_min"],
 )
 
+# KPIs com a solução final
+best_eval = evaluate_schedule(
+    assignments=best_assignments_seq,
+    patients=df_patients,
+    rooms_free=best_rooms_free,
+    excess_block_min=best_feas["excess_block_min"]
+)
+
+
 
 
 print("\nINITIAL SCORE DETAILS:")
@@ -974,51 +1263,3 @@ print("  excess_block_min =", feas["excess_block_min"])
 
 
 
-
-
-
-
-
-"""
-# ------- FINAL SCORE -------
-final_eval = evaluate_schedule(df_assignments, df_patients, df_room_free, feas["excess_block_min"])
-
-
-print("\nFeasibility:", feas["feasibility_score"],
-      "| unassigned:", feas["n_unassigned"],
-      "| block_closed:", feas["block_unavailable_viol"],
-      "| surg_unavail:", feas["surg_unavailable_viol"],
-      "| excess_block_min:", feas["excess_block_min"],
-      "| excess_surgeon_min:", feas["excess_surgeon_min"],)
-
-# EVALUATE QUALITY
-ev = {}
-if feas["feasibility_score"] == 0:
-    ev = evaluate_schedule(df_assignments, df_patients, rooms_free)
-   
-    print("Evaluation score:", f"{ev['score']:.4f}",
-          "| scheduled:", f"{ev['ratio_scheduled']:.3f}",
-          "| util:", f"{ev['util_rooms']:.3f}",
-          "| prio:", f"{ev['prio_rate']:.3f}",
-          "| wait_term:", f"{ev['norm_wait_term']:.3f}")
-
-    print("Feasibility penalty (soft):",
-          "excess_block_min =", feas["excess_block_min"],
-          "| excess_surgeon_min =", feas["excess_surgeon_min"])
-
-# EXCEL – folha de avaliação
-_eval_row = {
-    "n_unassigned": feas["n_unassigned"],
-    "block_unavailable_viol": feas["block_unavailable_viol"],
-    "surg_unavailable_viol": feas["surg_unavailable_viol"],
-    "excess_block_min": feas["excess_block_min"],
-    "excess_surgeon_min": feas["excess_surgeon_min"],
-    "feasibility_score": feas["feasibility_score"],
-}
-_eval_row.update({k: ev.get(k, None) for k in ["score","ratio_scheduled","util_rooms","prio_rate","norm_wait_term"]})
-eval_df = pd.DataFrame([_eval_row])
-
-from openpyxl import load_workbook  # só para garantir que o engine existe
-
-with pd.ExcelWriter(xlsx_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-    eval_df.to_excel(writer, sheet_name="Feasibility_Eval", index=False)  """
