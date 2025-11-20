@@ -137,13 +137,13 @@ def score_block_for_patient(cand_df, patient_row, n_days):
     df = cand_df.copy()
     df["free_after"] = (df["free_min"] - need).clip(lower=0)
     df["term_fit"]   = 1.0 - (df["free_after"] / C_PER_SHIFT)
-    df["term_early"] = 1.0 - ((df["day"] - 1) / day_max)
-    df["term_cont"]  = df["continuity"].astype(float)
+    df["term_early"] = 1.0 - ((df["day"] - 1) / day_max)          # earlier days preferred
+    df["term_cont"]  = df["continuity"].astype(float)             # stay in same block if possible
     df["W_block"] = df["term_fit"] + df["term_early"] + df["term_cont"]
     return df.sort_values("W_block", ascending=False)
 
 
-def commit_assignment(patient_row, best_row, iteration, w_patient=None, w_block=None):
+def commit_assignment(patient_row, best_row, iteration, w_patient=None, w_block=None): # atualiza o estado (capacidade + carga do cirurgião) e regista a cirurgia
     """Update capacity, surgeon-load, and record assignment with iteration order."""
     pid = int(patient_row["patient_id"])
     sid = int(patient_row["surgeon_id"])
@@ -156,7 +156,7 @@ def commit_assignment(patient_row, best_row, iteration, w_patient=None, w_block=
 
     # update surgeon load
     idx_s = (df_surgeon_load["surgeon_id"] == sid) & (df_surgeon_load["day"] == d) & (df_surgeon_load["shift"] == sh)
-    df_surgeon_load.loc[idx_s, "used_min"] += dur_need
+    df_surgeon_load.loc[idx_s, "used_min"] += dur_need           #adiciona os minutos da respetiva cirurgia ao cirurgião
 
     # record assignment (store iteration and optional scores)
     df_assignments.loc[len(df_assignments)] = {
@@ -189,7 +189,7 @@ def deadline_term(priority, waited):
 
 def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIFT):
     """
-    Mede quão 'inviável' é uma solução:
+    Mede quão 'inviável' é uma solução:                  -> Para depois penalizar na local search
     - excesso de minutos por bloco
     - excesso de minutos por cirurgião
     - cirurgias em blocos fechados
@@ -202,7 +202,7 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
     # uso por bloco (a partir de assignments)
     if len(assignments):
         used_by_block = (assignments.groupby(["room", "day", "shift"], as_index=False)
-                         .agg(used_min=("used_min", "sum")))
+                         .agg(used_min=("used_min", "sum")))    #duração+limpeza de todas as cirurgias desse bloco
     else:
         used_by_block = rooms_base[["room","day","shift"]].copy()
         used_by_block["used_min"] = 0
@@ -211,7 +211,7 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
         used_by_block,
         on=["room","day","shift"],
         how="left"
-    ).fillna({"used_min": 0})
+    ).fillna({"used_min": 0})        #para cada bloco ficamos com: available; cap_min; used_min
 
     rooms_join["excess_min"] = (rooms_join["used_min"] - rooms_join["cap_min"]).clip(lower=0)
     excess_block_min = int(rooms_join["excess_min"].sum())
@@ -232,9 +232,9 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
         how="left",
         suffixes=("","_s")
     )
-    surg_unavailable_viol = int((ass_with_surg["available"].fillna(0) == 0).sum())
+    surg_unavailable_viol = int((ass_with_surg["available"].fillna(0) == 0).sum())   #->número de cirurgias com cirurgião indisponível naquele turno
 
-    # excesso por cirurgião em cada (day,shift)
+    # excesso de minutos por cirurgião em cada (day,shift)
     if len(assignments):
         sload = (assignments.groupby(["surgeon_id","day","shift"], as_index=False)
                  .agg(used_min=("used_min","sum")))
