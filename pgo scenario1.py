@@ -27,7 +27,7 @@ No fim, calcula KPIs (utilização, capacidade usada, doentes agendados/por agen
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "Instance_C1_30.DAT"
+DATA_FILE = "Instance_C1_30.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time
@@ -263,8 +263,8 @@ while True:                          # ciclo infinito que só é parado com brea
 
     # count feasible blocks per patient (after lock)
     df_feas_count = (
-        df_p_blocks.groupby("patient_id", as_index=False)
-                   .agg(feasible_blocks=("room", "count"))
+        df_p_blocks.groupby("patient_id", as_index=False)     #agfrupa por patient_id e conta quantas salas aparecem
+                   .agg(feasible_blocks=("room", "count"))    #Se tiver o blocos, não pode ser agendada cirurgua
     )
 
     step1 = df_pmini.merge(df_feas_count, on="patient_id", how="left").fillna({"feasible_blocks": 0})
@@ -284,8 +284,8 @@ while True:                          # ciclo infinito que só é parado com brea
     )
 
     # stop if no feasible patients remain
-    if step1["feasible_blocks"].fillna(0).max() == 0:
-        print("\nNo more schedulable patients under Step-1 filters.")
+    if step1["feasible_blocks"].fillna(0).max() == 0:                  #quando não há mais blocos diposniceis, para
+        print("\nNo more schedulable patients under Step-1 filters.") 
         break
 
     # NEW: iterate over the Step-1 ranking until we find someone who passes Step-2
@@ -294,16 +294,16 @@ while True:                          # ciclo infinito que só é parado com brea
 
     for _, patient_row in step1_sorted.iterrows():
         # Step 2: compute feasible blocks (Scenario 1 lock enforced)
-        cand_blocks = feasible_blocks_step2(patient_row)
+        cand_blocks = feasible_blocks_step2(patient_row)            #blocos viáveis para esse paciente
         if cand_blocks.empty:
-            # next candidate
+            # next candidate   para o caso em que não tiver mais blocos disponivies para esse candidato
             continue
 
-        # score blocks and pick best
+        # score blocks and pick best -> Escolher o melhor bloco para o paciente selecionado
         scored = score_block_for_patient(cand_blocks, patient_row, n_days=n_days)
         best_block = scored.iloc[0]
 
-        # commit
+        # commit -> Marcação da cirurgia
         commit_assignment(
             patient_row,
             best_block,
@@ -418,7 +418,7 @@ surgeons_av_matrix = inputs_surgeons.pivot_table(
 # Add a simple sequence number per (room,day,shift)
 assignments_enriched = assignments_enriched.copy()
 assignments_enriched["seq_in_block"] = (
-    assignments_enriched.groupby(["room", "day", "shift"]).cumcount() + 1
+    assignments_enriched.groupby(["room", "day", "shift"]).cumcount() + 1   #colocar a ordem da cirurgia dentro desse bloco
 )
 
 # Capacity snapshots (final)
