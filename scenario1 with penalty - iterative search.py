@@ -66,7 +66,7 @@ surg_av = get_array("SurgeonAvailability")
 # DATAFRAMES
 # ------------------------------
 # Patients
-df_patients = pd.DataFrame({
+df_patients = pd.DataFrame({                       #cria um dataframe com o id do paciente, com a respetiva duração estimada, prioridade, tempo que já esperou e o cirurugião alocado
     "patient_id": range(1, n_patients + 1),
     "duration": durations,
     "priority": priorities,
@@ -76,7 +76,7 @@ df_patients = pd.DataFrame({
 
 # Rooms
 rows = []
-for r in range(n_rooms):
+for r in range(n_rooms):                         #passar a matriz do block availability para um datframe -> room;day;shift;avalilabe
     for d in range(n_days):
         for shift in (1, 2):  # 1=AM, 2=PM
             available = int(block_av[d][r][shift - 1])
@@ -85,7 +85,7 @@ df_rooms = pd.DataFrame(rows)
 
 # Surgeons
 rows = []
-for s in range(n_surgeons):
+for s in range(n_surgeons):                     #passar a matriz do surg_av para um dataframe -> surgeon_id;day;shift;available
     for d in range(n_days):
         for shift in (1, 2):
             availability = int(surg_av[s][d][shift - 1])
@@ -103,18 +103,18 @@ def feasible_blocks_step2(patient_row):
 
     # surgeon available (day, shift)
     surg_ok = df_surgeons[(df_surgeons["surgeon_id"] == sid) &
-                          (df_surgeons["available"] == 1)][["day", "shift"]]
+                          (df_surgeons["available"] == 1)][["day", "shift"]]               #ver os dias e os turnos em que existem cirurgiões diposniveis para oa paciente ecnontrado no step1
 
     # rooms open with enough capacity
     cap_ok = df_capacity[(df_capacity["available"] == 1) &
                          (df_capacity["free_min"] >= need)][["room", "day", "shift", "free_min"]]
 
-    cand = surg_ok.merge(cap_ok, on=["day", "shift"], how="inner")
+    cand = surg_ok.merge(cap_ok, on=["day", "shift"], how="inner")                          #Ficar so com os dados de quando o cirurgiao esta disponivel e existe blocos disponiveis
 
     # surgeon load within shift capacity
     surg_load = df_surgeon_load[df_surgeon_load["surgeon_id"] == sid][["day", "shift", "used_min"]]
     cand = cand.merge(surg_load, on=["day", "shift"], how="left").fillna({"used_min": 0})
-    cand = cand[(cand["used_min"] + need) <= C_PER_SHIFT]
+    cand = cand[(cand["used_min"] + need) <= C_PER_SHIFT]  #(minutos já usados pelo cirurgião no turno) + (minutos necessários para este doente) ≤ 360
 
     # continuity flag (already operating in same block)
     if len(df_assignments) > 0:
