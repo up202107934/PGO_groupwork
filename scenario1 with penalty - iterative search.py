@@ -62,6 +62,8 @@ n_surgeons = get_int("NumberSurgeons", alt_name="NumberOfSurgeons")
 surg_av = get_array("SurgeonAvailability")
 
 
+
+
 # ------------------------------
 # DATAFRAMES
 # ------------------------------
@@ -73,6 +75,8 @@ df_patients = pd.DataFrame({                       #cria um dataframe com o id d
     "waiting": waitings,
     "surgeon_id": surgeons
 })
+
+
 
 # Rooms
 rows = []
@@ -91,6 +95,9 @@ for s in range(n_surgeons):                     #passar a matriz do surg_av para
             availability = int(surg_av[s][d][shift - 1])
             rows.append({"surgeon_id": s + 1, "day": d + 1, "shift": shift, "available": availability})
 df_surgeons = pd.DataFrame(rows)
+
+
+
 
 
 # ------------------------------
