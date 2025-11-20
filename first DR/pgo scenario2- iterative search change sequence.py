@@ -431,7 +431,7 @@ def local_search_iterated(assign_init, df_rooms, df_surgeons, patients, C_PER_SH
         rooms_join,
         feas_current["excess_block_min"]
     )["score"]
-
+   
     print(f"\nLS START — score inicial={best_score:.4f}, infeas={best_feas}")
 
     no_improv = 0
@@ -662,6 +662,56 @@ best_assignments, best_score, best_feas = local_search_iterated(
 
 print("\nLocal search finished:",
      f"best_score={best_score:.4f}, best_feas={best_feas}")
+# --- BUILD FINAL SOLUTION OBJECTS (df_assignments_final) ---
+df_assignments_final = best_assignments.copy()
+
+# rebuild capacity for the best solution
+df_capacity_final = df_rooms.copy()
+df_capacity_final["free_min"] = df_capacity_final["available"].apply(lambda a: C_PER_SHIFT if a == 1 else 0)
+
+if len(df_assignments_final):
+    used_by_block = df_assignments_final.groupby(["room","day","shift"], as_index=False).agg(used_min=("used_min","sum"))
+    for _, r in used_by_block.iterrows():
+        idx = (
+            (df_capacity_final["room"] == int(r["room"])) &
+            (df_capacity_final["day"] == int(r["day"])) &
+            (df_capacity_final["shift"] == int(r["shift"]))
+        )
+        df_capacity_final.loc[idx, "free_min"] -= int(r["used_min"])
+
+# compute rooms_free_final
+df_room_free_final = df_capacity_final.copy()
+df_room_free_final["cap_min"] = df_room_free_final["available"] * C_PER_SHIFT
+df_room_free_final["used_min"] = df_room_free_final["cap_min"] - df_room_free_final["free_min"]
+df_room_free_final["utilization"] = df_room_free_final.apply(
+    lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0.0,
+    axis=1
+)
+
+# compute feasibility for final
+feas_final = feasibility_metrics(
+    df_assignments_final,
+    df_rooms,
+    df_surgeons,
+    df_patients,
+    C_PER_SHIFT
+)
+
+# compute final evaluation
+final_eval = evaluate_schedule(
+    df_assignments_final,
+    df_patients,
+    df_room_free_final,
+    feas_final["excess_block_min"]
+)
+
+print("\nFINAL SCORE DETAILS (AFTER LOCAL SEARCH):")
+print("  score =", final_eval["score"])
+print("  ratio_scheduled =", final_eval["ratio_scheduled"])
+print("  util_rooms =", final_eval["util_rooms"])
+print("  prio_rate =", final_eval["prio_rate"])
+print("  norm_wait_term =", final_eval["norm_wait_term"])
+print("  excess_block_min =", feas_final["excess_block_min"])
 
 # usar a solução melhorada (ou manter original se não melhorou)
 #if len(best_assignments):
@@ -941,7 +991,16 @@ feas = feasibility_metrics(
 # ------- SCORE INICIAL -------
 initial_eval = evaluate_schedule(df_assignments, df_patients, df_room_free, feas["excess_block_min"])
 
-print("\nINITIAL SCORE:", initial_eval["score"])
+print("\nINITIAL SCORE DETAILS:")
+print("  score =", initial_eval["score"])
+print("  ratio_scheduled =", initial_eval["ratio_scheduled"])
+print("  util_rooms =", initial_eval["util_rooms"])
+print("  prio_rate =", initial_eval["prio_rate"])
+print("  norm_wait_term =", initial_eval["norm_wait_term"])
+print("  excess_block_min =", feas["excess_block_min"])
+
+
+
 # ------- FINAL SCORE -------
 final_eval = evaluate_schedule(df_assignments, df_patients, df_room_free, feas["excess_block_min"])
 
