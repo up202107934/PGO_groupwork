@@ -23,9 +23,9 @@ ALPHA2 = 0.25  # waited days
 ALPHA3 = 0.25  # deadline closeness
 ALPHA4 = 0.25  # feasible blocks
 
-ALPHA5 = 0.25  # priority
-ALPHA6 = 0.25  # waited days
-ALPHA7 = 0.25 
+ALPHA5 = 1/3
+ALPHA6 = 1/3
+ALPHA7 = 1/3 
 
 TOLERANCE = 15  #we allow 15 minutes delays after end time of each block
 ROOM_CHANGE_TIME = 5  #we assume that a surgeon changing rooms takes 5 minutes
@@ -1194,12 +1194,8 @@ else:
 
             start = int(row["start_min"])
 
-            # queremos que o 'end' mostrado seja o fim da CIRURGIA (sem limpeza)
-            if INCLUDE_CLEANUP_IN_TIMELINE:
-                end = start + dur
-            else:
-                # se um dia quiseres mostrar o fim incluindo limpeza:
-                end = int(row["end_min"])
+            end = int(row["end_min"])  
+            
 
             print(f"  (p={pid}, s={sid}, dur={dur}, start={start}, end={end})")
 
@@ -1236,6 +1232,39 @@ best_eval = evaluate_schedule(
 
 
 
+print("\n==================== FINAL KPIs =====================\n")
+
+
+print(">>> Evaluation KPIs")
+print(f" Score:              {best_eval['score']:.4f}")
+print(f" Ratio Scheduled:    {best_eval['ratio_scheduled']:.3f}")
+print(f" Room Utilization:   {best_eval['util_rooms']:.3f}")
+print(f" Priority Rate:      {best_eval['prio_rate']:.3f}")
+
+# Average waiting time of scheduled patients
+if len(best_assignments_seq) > 0:
+    avg_wait_days = best_assignments_seq["waiting"].mean()
+else:
+    avg_wait_days = 0
+    
+print(f" Average waiting time (days): {avg_wait_days:.2f}")
+
+print("\n>>> Feasibility KPIs")
+print(f" Unassigned patients:        {best_feas['n_unassigned']}")
+print(f" Excess minutes in blocks:   {best_feas['excess_block_min']}")
+print(f" Excess surgeon minutes:     {best_feas['excess_surgeon_min']}")
+print(f" Block availability viol:    {best_feas['block_unavailable_viol']}")
+print(f" Surgeon availability viol:  {best_feas['surg_unavailable_viol']}")
+print(f" Feasibility score:          {best_feas['feasibility_score']}")
+
+print("\n>>> Global Overview")
+print(f" Total scheduled patients = {len(best_assignments_seq)}")
+print(f" Total capacity minutes   = {best_rooms_free['cap_min'].sum()}")
+print(f" Total used minutes       = {best_rooms_free['used_min'].sum()}")
+print(f" Total free minutes       = {best_rooms_free['free_min'].sum()}")
+print(f" Global utilization       = {best_rooms_free['used_min'].sum() / best_rooms_free['cap_min'].sum():.3f}")
+
+print("\n=====================================================\n")
 
 
 

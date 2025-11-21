@@ -23,6 +23,11 @@ ALPHA2 = 0.25  # waited days
 ALPHA3 = 0.25  # deadline closeness
 ALPHA4 = 0.25  # feasible blocks
 
+ALPHA5 = 1/3  
+ALPHA6 = 1/3
+ALPHA7 = 1/3 
+
+
 TOLERANCE = 15  # NEW- tolerance minutes to pass the capacity of the shift
 
 
@@ -139,7 +144,7 @@ def score_block_for_patient(cand_df, patient_row, n_days):
     df["term_fit"]   = 1.0 - (df["free_after"] / C_PER_SHIFT)
     df["term_early"] = 1.0 - ((df["day"] - 1) / day_max)
     df["term_cont"]  = df["continuity"].astype(float)
-    df["W_block"] = df["term_fit"] + df["term_early"] + df["term_cont"]
+    df["W_block"] = ALPHA5 * df["term_fit"] + ALPHA6 * df["term_early"] + ALPHA7 * df["term_cont"]
     return df.sort_values("W_block", ascending=False)
 
 
@@ -259,7 +264,7 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
 
 
 def evaluate_schedule(assignments, patients, rooms_join,
-                      weights=(0.4, 0.3, 0.2, 0.1)):
+                      weights=(0.6, 0.1, 0.25, 0.05)):
     """
     Score de qualidade da solução:
     - % de doentes agendados
