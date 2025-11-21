@@ -561,7 +561,8 @@ feas_init = feasibility_metrics(df_assignments, df_rooms, df_surgeons, df_patien
 score_init = evaluate_schedule(df_assignments, df_patients, feas_init["rooms_join"])
 
 
-
+print(df_assignments)
+print(len(df_assignments)/224)
 
 # ============================================
 # LOCAL SEARCH / ILS com vizinho swap i→j
