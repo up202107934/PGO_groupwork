@@ -18,10 +18,10 @@ DATA_FILE = "instance_c1_30.dat"
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time
 
-ALPHA1 = 0.25  # priority
-ALPHA2 = 0.25  # waited days
-ALPHA3 = 0.25  # deadline closeness
-ALPHA4 = 0.25  # feasible blocks
+ALPHA1 = 0.10  # priority
+ALPHA2 = 0.10  # waited days
+ALPHA3 = 0.10 # deadline closeness
+ALPHA4 = 0.70  # feasible blocks
 
 ALPHA5 = 1/3  
 ALPHA6 = 1/3
@@ -565,10 +565,41 @@ while True:
 feas_init = feasibility_metrics(df_assignments, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
 score_init = evaluate_schedule(df_assignments, df_patients, feas_init["rooms_join"])
 
+assigned_ids = set(df_assignments["patient_id"])
+unassigned_patients = df_patients[~df_patients["patient_id"].isin(assigned_ids)].copy()
+print(unassigned_patients["waiting"].mean())
+print("aquiii")
+
+
+# Rooms: base capacity
+rooms_base = df_rooms[["room", "day", "shift", "available"]].copy()
+rooms_base["cap_min"] = rooms_base["available"] * C_PER_SHIFT
+
+if len(df_assignments):
+    used_by_block = (
+        df_assignments
+        .groupby(["room", "day", "shift"], as_index=False)
+        .agg(used_min=("used_min", "sum"))
+    )
+else:
+    used_by_block = rooms_base[["room", "day", "shift"]].copy()
+    used_by_block["used_min"] = 0
+
+rooms_free = rooms_base.merge(
+    used_by_block, on=["room", "day", "shift"], how="left"
+).fillna({"used_min": 0})
+
+rooms_free["free_min"] = (rooms_free["cap_min"] - rooms_free["used_min"]).clip(lower=0)
+rooms_free["utilization"] = rooms_free.apply(
+    lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0.0,
+    axis=1
+)
+rooms_free = rooms_free.sort_values(["room", "day", "shift"]).reset_index(drop=True)
+print(rooms_free)
+print(rooms_free[rooms_free["utilization"] != 0]["utilization"].mean())
+print("utilizaçaooo")
 
 print(df_assignments)
-print(len(df_assignments)/224)
-
 # ============================================
 # LOCAL SEARCH / ILS com vizinho swap i→j
 # ============================================
