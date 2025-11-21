@@ -319,7 +319,7 @@ def evaluate_schedule(assignments, patients, rooms_free, excess_block_min, weigh
             "norm_wait_term":float(norm_wait_term)}
 
 
-def generate_neighbor_swap(current_assignments,
+def generate_neighbor_swap(current_assignments,         #isto aqui já é depois do schedule???
                            df_patients,
                            df_rooms,
                            df_surgeons,
@@ -362,7 +362,7 @@ def generate_neighbor_swap(current_assignments,
         prow = prow.iloc[0]
 
         # blocos viáveis dado o assignments ATUAL
-        cand_blocks = candidate_blocks_for_patient_in_solution(
+        cand_blocks = candidate_blocks_for_patient_in_solution(            #devolve os blocos (room, day, shift) onde este paciente pode ser colocado dada a situação atual
             assignments, prow, df_rooms, df_surgeons, C_PER_SHIFT
         )
         if len(cand_blocks) == 0:
