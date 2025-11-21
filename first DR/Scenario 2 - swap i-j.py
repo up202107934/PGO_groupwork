@@ -18,14 +18,14 @@ DATA_FILE = "Instance_C1_30.dat"
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
 
-ALPHA1 = 0.25  # priority
-ALPHA2 = 0.25  # waited days
-ALPHA3 = 0.25  # deadline closeness
-ALPHA4 = 0.25  # feasible blocks
+ALPHA1 = 0.70 # priority
+ALPHA2 = 0.1  # waited days
+ALPHA3 = 0.1 # deadline closeness
+ALPHA4 = 0.1 # feasible blocks
 
 ALPHA5 = 1/3
 ALPHA6 = 1/3
-ALPHA7 = 1/3 
+ALPHA7 = 1/3
 
 TOLERANCE = 15  #we allow 15 minutes delays after end time of each block
 ROOM_CHANGE_TIME = 5  #we assume that a surgeon changing rooms takes 5 minutes
@@ -1232,40 +1232,36 @@ best_eval = evaluate_schedule(
 
 
 
-print("\n==================== FINAL KPIs =====================\n")
+print("\n==================== INITIAL KPIs =====================\n")
 
+print(">>> Evaluation KPIs (Initial)")
+print(f" Score:              {initial_eval['score']:.4f}")
+print(f" Ratio Scheduled:    {initial_eval['ratio_scheduled']:.3f}")
+print(f" Room Utilization:   {initial_eval['util_rooms']:.3f}")
+print(f" Priority Rate:      {initial_eval['prio_rate']:.3f}")
 
-print(">>> Evaluation KPIs")
-print(f" Score:              {best_eval['score']:.4f}")
-print(f" Ratio Scheduled:    {best_eval['ratio_scheduled']:.3f}")
-print(f" Room Utilization:   {best_eval['util_rooms']:.3f}")
-print(f" Priority Rate:      {best_eval['prio_rate']:.3f}")
-
-# Average waiting time of scheduled patients
-if len(best_assignments_seq) > 0:
-    avg_wait_days = best_assignments_seq["waiting"].mean()
+# Average waiting time of scheduled patients (initial)
+if len(initial_assignments_seq) > 0:
+    initial_avg_wait = initial_assignments_seq["waiting"].mean()
 else:
-    avg_wait_days = 0
-    
-print(f" Average waiting time (days): {avg_wait_days:.2f}")
+    initial_avg_wait = 0
 
-print("\n>>> Feasibility KPIs")
-print(f" Unassigned patients:        {best_feas['n_unassigned']}")
-print(f" Excess minutes in blocks:   {best_feas['excess_block_min']}")
-print(f" Excess surgeon minutes:     {best_feas['excess_surgeon_min']}")
-print(f" Block availability viol:    {best_feas['block_unavailable_viol']}")
-print(f" Surgeon availability viol:  {best_feas['surg_unavailable_viol']}")
-print(f" Feasibility score:          {best_feas['feasibility_score']}")
+print(f" Average waiting time (days): {initial_avg_wait:.2f}")
 
-print("\n>>> Global Overview")
-print(f" Total scheduled patients = {len(best_assignments_seq)}")
-print(f" Total capacity minutes   = {best_rooms_free['cap_min'].sum()}")
-print(f" Total used minutes       = {best_rooms_free['used_min'].sum()}")
-print(f" Total free minutes       = {best_rooms_free['free_min'].sum()}")
-print(f" Global utilization       = {best_rooms_free['used_min'].sum() / best_rooms_free['cap_min'].sum():.3f}")
+print("\n>>> Feasibility KPIs (Initial)")
+print(f" Unassigned patients:        {initial_feas['n_unassigned']}")
+print(f" Excess minutes in blocks:   {initial_feas['excess_block_min']}")
+print(f" Excess surgeon minutes:     {initial_feas['excess_surgeon_min']}")
+print(f" Block availability viol:    {initial_feas['block_unavailable_viol']}")
+print(f" Surgeon availability viol:  {initial_feas['surg_unavailable_viol']}")
+print(f" Feasibility score:          {initial_feas['feasibility_score']}")
 
-print("\n=====================================================\n")
+# Global overview
+print("\n>>> Global Overview (Initial)")
+print(f" Total scheduled patients = {len(initial_assignments_seq)}")
+print(f" Total capacity minutes   = {initial_rooms_free['cap_min'].sum()}")
+print(f" Total used minutes       = {initial_rooms_free['used_min'].sum()}")
+print(f" Total free minutes       = {initial_rooms_free['free_min'].sum()}")
+print(f" Global utilization       = {initial_rooms_free['used_min'].sum() / initial_rooms_free['cap_min'].sum():.3f}")
 
-
-
-
+print("\n=======================================================\n")

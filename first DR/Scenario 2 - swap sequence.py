@@ -600,6 +600,7 @@ def sequence_global_by_surgeon(assignments_enriched, C_PER_SHIFT, CLEANUP, TOLER
 
 
 
+
 def build_room_free_from_assignments(assignments, df_rooms, C_PER_SHIFT):
     # base: capacidade dos blocos
     rooms_base = df_rooms[["room", "day", "shift", "available"]].copy()
@@ -654,6 +655,33 @@ def build_surgeon_free_from_assignments(assignments, df_surgeons, C_PER_SHIFT):
 
     surg_join = surg_join.sort_values(["surgeon_id", "day", "shift"]).reset_index(drop=True)
     return surg_join
+
+
+def build_surgeon_schedule(assignments_seq):
+    schedules = {}
+
+    df = assignments_seq.copy()
+    df = df[df["scheduled_by_seq"] == 1]
+
+    df = df.sort_values(["surgeon_id", "day", "start_min"])
+
+    for sid, group in df.groupby("surgeon_id"):
+        schedule = group[[ 
+            "day", "shift", "room",
+            "patient_id", "start_min", "end_min",
+            "duration", "priority", "waiting"
+        ]].copy()
+
+        schedule["turno"] = schedule["shift"].map({1:"AM", 2:"PM"})        
+        schedule = schedule[[ 
+            "day", "turno", "room",
+            "patient_id", "start_min", "end_min",
+            "duration", "priority", "waiting"
+        ]]
+
+        schedules[sid] = schedule
+    
+    return schedules
 
 # ------------------------------
 # INITIAL PLANNING STATE
@@ -1134,6 +1162,9 @@ final_blocks = rooms_free.merge(
     cases_per_block, on=["room", "day", "shift"], how="left"
 ).fillna({"n_cases": 0})
 
+#surgeon schedule
+surgeon_schedules = build_surgeon_schedule(assignments_seq_view)
+
 # ---------- 7) Write everything to Excel ----------
 with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
     # Inputs
@@ -1177,6 +1208,10 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
     # Unassigned (da solução final)
     unassigned_patients.to_excel(writer, sheet_name="Unassigned_ILS", index=False)
 
+    # ---------- 8) Horário por cirurgião ----------
+    for sid, sched_df in surgeon_schedules.items():
+        sheet_name = f"Surgeon_{sid}_Schedule"
+        sched_df.to_excel(writer, sheet_name=sheet_name, index=False)
 
 #print(f"\nExcel exported → {xlsx_path}")
 
