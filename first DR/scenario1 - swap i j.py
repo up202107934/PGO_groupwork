@@ -285,11 +285,12 @@ def evaluate_schedule(assignments, patients, rooms_join,
         util_rooms = 0.0
 
     if len(assignments):
-        merged = assignments.merge(
-            patients[["patient_id","priority","waiting"]],
-            on="patient_id", how="left"
-        )
-        prio_rate = float((merged["priority"] > 0).mean())
+        merged = assignments
+
+        # prioridade normalizada (0–3)
+        pmax = float(patients["priority"].max())
+        prio_rate = float(merged["priority"].mean() / pmax) if pmax > 0 else 0.0
+
         wmax = float(patients["waiting"].max())
         norm_wait_term = 1.0 - float(merged["waiting"].mean() / wmax) if wmax > 0 else 1.0
     else:

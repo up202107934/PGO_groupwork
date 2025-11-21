@@ -301,16 +301,17 @@ def evaluate_schedule(assignments, patients, rooms_free, excess_block_min, weigh
     util_rooms = float(rooms_free.loc[rooms_free["cap_min"] > 0, "utilization"].mean()) if len(rooms_free) else 0.0
 
     if len(assignments):
-        # assignments JÁ tem priority e waiting
         merged = assignments
-    
-        prio_rate = float((merged["priority"] > 0).mean())
+
+        # prioridade normalizada (0–3)
+        pmax = float(patients["priority"].max())
+        prio_rate = float(merged["priority"].mean() / pmax) if pmax > 0 else 0.0
+
         wmax = float(patients["waiting"].max())
         norm_wait_term = 1.0 - float(merged["waiting"].mean() / wmax) if wmax > 0 else 1.0
     else:
         prio_rate = 0.0
         norm_wait_term = 0.0
-
 
 
     score = (w1*ratio_scheduled + w2*util_rooms + w3*prio_rate + w4*norm_wait_term)-0.001* excess_block_min
