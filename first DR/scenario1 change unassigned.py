@@ -184,22 +184,17 @@ def deadline_term(priority, waited):
 
 
 # --------------------------------------------
-# FEASIBILITY & EVALUATION FUNCTIONS (para local search)
+# FEASIBILITY & EVALUATION FUNCTIONS
 # --------------------------------------------
 
 def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIFT):
-    """
-    Mede quão 'inviável' é uma solução:
-    - excesso de minutos por bloco
-    - excesso de minutos por cirurgião
-    - cirurgias em blocos fechados
-    - cirurgião em bloco onde não está disponível
-    """
-    # capacidade base por bloco
+    # --- bases de capacidade/availability por bloco e por cirurgião
     rooms_base = df_rooms[["room", "day", "shift", "available"]].copy()
     rooms_base["cap_min"] = rooms_base["available"] * C_PER_SHIFT
 
-    # uso por bloco (a partir de assignments)
+    surg_base = df_surgeons[["surgeon_id", "day", "shift", "available"]].drop_duplicates()
+
+    # --- uso por bloco a partir das assignações
     if len(assignments):
         used_by_block = (assignments.groupby(["room", "day", "shift"], as_index=False)
                          .agg(used_min=("used_min", "sum")))
@@ -207,34 +202,23 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
         used_by_block = rooms_base[["room","day","shift"]].copy()
         used_by_block["used_min"] = 0
 
-    rooms_join = rooms_base.merge(
-        used_by_block,
-        on=["room","day","shift"],
-        how="left"
-    ).fillna({"used_min": 0})
+    rooms_join = rooms_base.merge(used_by_block, on=["room","day","shift"], how="left").fillna({"used_min":0})
 
+    # 1) excesso de tempo por bloco (não pode haver)
     rooms_join["excess_min"] = (rooms_join["used_min"] - rooms_join["cap_min"]).clip(lower=0)
     excess_block_min = int(rooms_join["excess_min"].sum())
 
-    # blocos fechados com cirurgias
-    bad_block_assigns = assignments.merge(
-        rooms_base,
-        on=["room","day","shift"],
-        how="left"
-    )
+    # 2) atribuições em blocos fechados (availability=0)
+    bad_block_assigns = assignments.merge(rooms_base, on=["room","day","shift"], how="left")
     block_unavailable_viol = int((bad_block_assigns["available"].fillna(0) == 0).sum())
 
-    # disponibilidade de cirurgião por (day, shift)
-    surg_base = df_surgeons[["surgeon_id", "day", "shift", "available"]].drop_duplicates()
+    # 3) disponibilidade do cirurgião (não pode operar se available=0)
     ass_with_surg = assignments.merge(
-        surg_base,
-        on=["surgeon_id","day","shift"],
-        how="left",
-        suffixes=("","_s")
+        surg_base, on=["surgeon_id","day","shift"], how="left", suffixes=("","_s")
     )
     surg_unavailable_viol = int((ass_with_surg["available"].fillna(0) == 0).sum())
 
-    # excesso por cirurgião em cada (day,shift)
+    # 4) estouro de tempo por cirurgião em cada (day,shift) (limite = C_PER_SHIFT)
     if len(assignments):
         sload = (assignments.groupby(["surgeon_id","day","shift"], as_index=False)
                  .agg(used_min=("used_min","sum")))
@@ -243,61 +227,104 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
     else:
         excess_surgeon_min = 0
 
+    # 5) pacientes não agendados
+    n_unassigned = int(len(patients) - len(assignments))
+
+     # 6) violações de prazo clínico (waiting days > limite da prioridade)
+    pats = patients.copy()
+    pats["deadline_limit"] = pats["priority"].apply(deadline_limit_from_priority)
+    pats["overdue_days"] = (pats["waiting"] - pats["deadline_limit"]).clip(lower=0)
+
+    total_overdue_days = int(pats["overdue_days"].sum())
+    n_overdue_patients = int((pats["overdue_days"] > 0).sum())
+
+    # score total de infeasibilidade (minimizar; 0 => solução "ideal")
     feasibility_score = (
-        block_unavailable_viol +
-        surg_unavailable_viol +
-        excess_block_min +
-        excess_surgeon_min
+          block_unavailable_viol
+        + surg_unavailable_viol
+        + excess_block_min
+        + excess_surgeon_min
+        + total_overdue_days      # penaliza atraso em dias
+        + n_overdue_patients      # penaliza nº de doentes em atraso
     )
 
     return {
-        "feasibility_score": feasibility_score,
+        "n_unassigned": n_unassigned,
+        "block_unavailable_viol": block_unavailable_viol,
+        "surg_unavailable_viol": surg_unavailable_viol,
         "excess_block_min": excess_block_min,
         "excess_surgeon_min": excess_surgeon_min,
-        "rooms_join": rooms_join
+        "total_overdue_days": total_overdue_days,
+        "n_overdue_patients": n_overdue_patients,
+        "feasibility_score": feasibility_score,
+        "rooms_cap_join": rooms_join
     }
 
-
-def evaluate_schedule(assignments, patients, rooms_join,
-                      weights=(0.4, 0.3, 0.2, 0.1)):
-    """
-    Score de qualidade da solução:
-    - % de doentes agendados
-    - utilização média das salas
-    - cobertura de prioridades
-    - termo de tempo de espera médio
-    """
+def evaluate_schedule(assignments, patients, rooms_free, excess_block_min,
+                      weights=(0.6, 0.1, 0.25, 0.05)):
     w1, w2, w3, w4 = weights
     total_patients = len(patients)
-    ratio_scheduled = len(assignments) / total_patients if total_patients else 0.0
+    ratio_scheduled = (len(assignments) / total_patients) if total_patients else 0.0
 
-    # utilização média das salas
-    if len(rooms_join):
-        total_cap = rooms_join["cap_min"].sum()
-        total_used = rooms_join["used_min"].sum()
-        util_rooms = float(total_used / total_cap) if total_cap > 0 else 0.0
-    else:
-        util_rooms = 0.0
+    util_rooms = float(
+        rooms_free.loc[rooms_free["cap_min"] > 0, "utilization"].mean()
+    ) if len(rooms_free) else 0.0
 
     if len(assignments):
-        merged = assignments
-
-        # prioridade normalizada (0–3)
+        merged = assignments.copy()  
+        # ------------------------------
+        # 1) PRIORITY TERM (normalizado)
+        # ------------------------------
         pmax = float(patients["priority"].max())
         prio_rate = float(merged["priority"].mean() / pmax) if pmax > 0 else 0.0
 
+        # ------------------------------
+        # 2) WAITING TERM + DEADLINE PENALTY
+        # ------------------------------
         wmax = float(patients["waiting"].max())
-        norm_wait_term = 1.0 - float(merged["waiting"].mean() / wmax) if wmax > 0 else 1.0
+
+        # base: esperar mais = score maior
+        if wmax > 0:
+            base_wait_term = 1.0 - (float(merged["waiting"].mean()) / wmax)
+        else:
+            base_wait_term = 1.0
+
+        # limite por prioridade
+        merged["deadline_limit"] = merged["priority"].apply(deadline_limit_from_priority)
+
+        # atraso face ao limite clínico
+        merged["overdue_days"] = (merged["waiting"] - merged["deadline_limit"]).clip(lower=0)
+        merged["overdue_frac"] = merged["overdue_days"] / merged["deadline_limit"]
+
+        avg_overdue_frac = float(merged["overdue_frac"].mean())
+
+        # termo final de waiting
+        norm_wait_term = max(0.0, base_wait_term - avg_overdue_frac)
+
     else:
         prio_rate = 0.0
         norm_wait_term = 0.0
 
-    score = (w1*ratio_scheduled +
-             w2*util_rooms +
-             w3*prio_rate +
-             w4*norm_wait_term)
+    # ------------------------------
+    # 3) SCORE FINAL
+    # ------------------------------
+    score = (
+        w1 * ratio_scheduled +
+        w2 * util_rooms +
+        w3 * prio_rate +
+        w4 * norm_wait_term -
+        0.001 * excess_block_min
+    )
 
-    return float(score)
+    return {
+        "score": float(score),
+        "ratio_scheduled": float(ratio_scheduled),
+        "util_rooms": float(util_rooms),
+        "prio_rate": float(prio_rate),
+        "norm_wait_term": float(norm_wait_term)
+    }
+
+
 
 import random  # garante que tens o import no topo do ficheiro
 

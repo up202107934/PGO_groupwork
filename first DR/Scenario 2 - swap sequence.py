@@ -275,12 +275,22 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
     # 5) pacientes não agendados
     n_unassigned = int(len(patients) - len(assignments))
 
-    # score total de infeasibilidade (minimizar; 0 => solução viável)
+     # 6) violações de prazo clínico (waiting days > limite da prioridade)
+    pats = patients.copy()
+    pats["deadline_limit"] = pats["priority"].apply(deadline_limit_from_priority)
+    pats["overdue_days"] = (pats["waiting"] - pats["deadline_limit"]).clip(lower=0)
+
+    total_overdue_days = int(pats["overdue_days"].sum())
+    n_overdue_patients = int((pats["overdue_days"] > 0).sum())
+
+    # score total de infeasibilidade (minimizar; 0 => solução "ideal")
     feasibility_score = (
-        block_unavailable_viol
+          block_unavailable_viol
         + surg_unavailable_viol
         + excess_block_min
         + excess_surgeon_min
+        + total_overdue_days      # penaliza atraso em dias
+        + n_overdue_patients      # penaliza nº de doentes em atraso
     )
 
     return {
@@ -289,37 +299,75 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
         "surg_unavailable_viol": surg_unavailable_viol,
         "excess_block_min": excess_block_min,
         "excess_surgeon_min": excess_surgeon_min,
+        "total_overdue_days": total_overdue_days,
+        "n_overdue_patients": n_overdue_patients,
         "feasibility_score": feasibility_score,
         "rooms_cap_join": rooms_join
     }
 
-def evaluate_schedule(assignments, patients, rooms_free, excess_block_min, weights=(0.6, 0.1, 0.25, 0.05)):
+def evaluate_schedule(assignments, patients, rooms_free, excess_block_min,
+                      weights=(0.6, 0.1, 0.25, 0.05)):
     w1, w2, w3, w4 = weights
     total_patients = len(patients)
     ratio_scheduled = (len(assignments) / total_patients) if total_patients else 0.0
 
-    util_rooms = float(rooms_free.loc[rooms_free["cap_min"] > 0, "utilization"].mean()) if len(rooms_free) else 0.0
+    util_rooms = float(
+        rooms_free.loc[rooms_free["cap_min"] > 0, "utilization"].mean()
+    ) if len(rooms_free) else 0.0
 
     if len(assignments):
-        merged = assignments
-
-        # prioridade normalizada (0–3)
+        merged = assignments.copy()  
+        # ------------------------------
+        # 1) PRIORITY TERM (normalizado)
+        # ------------------------------
         pmax = float(patients["priority"].max())
         prio_rate = float(merged["priority"].mean() / pmax) if pmax > 0 else 0.0
 
+        # ------------------------------
+        # 2) WAITING TERM + DEADLINE PENALTY
+        # ------------------------------
         wmax = float(patients["waiting"].max())
-        norm_wait_term = 1.0 - float(merged["waiting"].mean() / wmax) if wmax > 0 else 1.0
+
+        # base: esperar mais = score maior
+        if wmax > 0:
+            base_wait_term = 1.0 - (float(merged["waiting"].mean()) / wmax)
+        else:
+            base_wait_term = 1.0
+
+        # limite por prioridade
+        merged["deadline_limit"] = merged["priority"].apply(deadline_limit_from_priority)
+
+        # atraso face ao limite clínico
+        merged["overdue_days"] = (merged["waiting"] - merged["deadline_limit"]).clip(lower=0)
+        merged["overdue_frac"] = merged["overdue_days"] / merged["deadline_limit"]
+
+        avg_overdue_frac = float(merged["overdue_frac"].mean())
+
+        # termo final de waiting
+        norm_wait_term = max(0.0, base_wait_term - avg_overdue_frac)
+
     else:
         prio_rate = 0.0
         norm_wait_term = 0.0
 
+    # ------------------------------
+    # 3) SCORE FINAL
+    # ------------------------------
+    score = (
+        w1 * ratio_scheduled +
+        w2 * util_rooms +
+        w3 * prio_rate +
+        w4 * norm_wait_term -
+        0.001 * excess_block_min
+    )
 
-
-    score = (w1*ratio_scheduled + w2*util_rooms + w3*prio_rate + w4*norm_wait_term)-0.001* excess_block_min
-    return {"score":float(score), "ratio_scheduled":float(ratio_scheduled),
-            "util_rooms":float(util_rooms), "prio_rate":float(prio_rate),
-            "norm_wait_term":float(norm_wait_term)}
-
+    return {
+        "score": float(score),
+        "ratio_scheduled": float(ratio_scheduled),
+        "util_rooms": float(util_rooms),
+        "prio_rate": float(prio_rate),
+        "norm_wait_term": float(norm_wait_term)
+    }
 
 def generate_neighbor_resequence(current_enriched,
                                  max_blocks_to_change=1,
