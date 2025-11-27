@@ -777,13 +777,27 @@ def local_search(assign_init, df_rooms, df_surgeons, patients,
     # avaliar solução inicial
     feas = feasibility_metrics(current, df_rooms, df_surgeons, patients, C_PER_SHIFT)
     best_feas = feas["feasibility_score"]
-    best_rooms_join = feas["rooms_join"]
+    best_rooms_join = feas["rooms_cap_join"]
 
-    if best_feas == 0:
-        best_score = evaluate_schedule(current, patients, best_rooms_join)
-    else:
-        # penalizar soluções inviáveis
-        best_score = -best_feas
+    
+    best_eval = current.merge(
+        patients[["patient_id", "priority", "waiting", "duration"]],
+        on="patient_id",
+        how="left"
+    )
+    
+    best_rooms_eval = best_rooms_join.copy()
+    best_rooms_eval["utilization"] = best_rooms_eval.apply(
+        lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0,
+        axis=1
+    )
+    
+    best_score = evaluate_schedule(
+    best_eval,
+    patients,
+    best_rooms_eval,
+    feas["excess_block_min"]
+    )["score"]
 
     no_improv = 0
 
@@ -812,12 +826,28 @@ def local_search(assign_init, df_rooms, df_surgeons, patients,
         
 
         feas_c = feasibility_metrics(candidate, df_rooms, df_surgeons, patients, C_PER_SHIFT)
-        rooms_join_c = feas_c["rooms_join"]
+        rooms_join_c = feas_c["rooms_cap_join"]
 
-        if feas_c["feasibility_score"] == 0:
-            cand_score = evaluate_schedule(candidate, patients, rooms_join_c)
-        else:
-            cand_score = -feas_c["feasibility_score"]
+
+        
+        cand_eval = candidate.merge(
+        patients[["patient_id", "priority", "waiting", "duration"]],
+        on="patient_id",
+        how="left"
+    )
+    
+        rooms_c_eval = rooms_join_c.copy()
+        rooms_c_eval["utilization"] = rooms_c_eval.apply(
+            lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0,
+            axis=1
+        )
+        cand_score = evaluate_schedule(
+        cand_eval,
+        patients,
+        rooms_c_eval,
+        feas_c["excess_block_min"]
+    )["score"]
+        
             
         print(f"cand_score = {cand_score:.4f}, best_score = {best_score:.4f}, feas = {feas_c['feasibility_score']}")
 
@@ -945,9 +975,30 @@ while True:
 print("\nFinal assignments:")
 
 feas_init = feasibility_metrics(df_assignments, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
-score_init = evaluate_schedule(df_assignments, df_patients, feas_init["rooms_join"])
 
-print(f"Initial score = {score_init:.4f}, feasibility_score = {feas_init['feasibility_score']}")
+rooms_eval = feas_init["rooms_cap_join"].copy()
+rooms_eval["utilization"] = rooms_eval.apply(
+    lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0,
+    axis=1
+)
+
+# Primeiro enriquecer assignments com priority, waiting e duration
+assign_eval = df_assignments.merge(
+    df_patients[["patient_id", "priority", "waiting", "duration"]],
+    on="patient_id",
+    how="left"
+)
+
+# depois calcular score
+score_init = evaluate_schedule(
+    assign_eval,
+    df_patients,
+    rooms_eval,
+    feas_init["excess_block_min"]
+)
+
+
+print(f"Initial score = {score_init['score']:.4f}, feasibility_score = {feas_init['feasibility_score']}")
 
 
 
@@ -1189,5 +1240,5 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
     unassigned_patients.to_excel(writer, sheet_name="Unassigned", index=False)
 
 print(f"\nExcel exported → {xlsx_path}")
-print(f"Initial score = {score_init:.4f}, feasibility_score = {feas_init['feasibility_score']}")
+print(f"Initial score = {score_init['score']:.4f}, feasibility_score = {feas_init['feasibility_score']}")
 

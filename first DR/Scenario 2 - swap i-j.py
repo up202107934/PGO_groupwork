@@ -18,10 +18,10 @@ DATA_FILE = "Instance_C1_30.dat"
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
 
-ALPHA1 = 0.70 # priority
-ALPHA2 = 0.1  # waited days
-ALPHA3 = 0.1 # deadline closeness
-ALPHA4 = 0.1 # feasible blocks
+ALPHA1 = 0.25 # priority
+ALPHA2 = 0.25  # waited days
+ALPHA3 = 0.25 # deadline closeness
+ALPHA4 = 0.25 # feasible blocks
 
 ALPHA5 = 1/3
 ALPHA6 = 1/3
@@ -1283,38 +1283,3 @@ best_eval = evaluate_schedule(
 )
 
 
-
-print("\n==================== INITIAL KPIs =====================\n")
-
-print(">>> Evaluation KPIs (Initial)")
-print(f" Score:                     {initial_eval['score']:.4f}")
-print(f" Ratio Scheduled:           {initial_eval['ratio_scheduled']:.3f}")
-print(f" Room Utilization:          {initial_eval['util_rooms']:.3f}")
-print(f" Priority Rate:             {initial_eval['prio_rate']:.3f}")
-print(f" Normalised waiting term:   {initial_eval['norm_wait_term']:.3f}")
-
-# Average waiting time of scheduled patients (initial)
-if len(initial_assignments_seq) > 0:
-    initial_avg_wait = initial_assignments_seq["waiting"].mean()
-else:
-    initial_avg_wait = 0
-
-print(f" Average waiting time (days): {initial_avg_wait:.2f}")
-
-print("\n>>> Feasibility KPIs (Initial)")
-print(f" Unassigned patients:        {initial_feas['n_unassigned']}")
-print(f" Excess minutes in blocks:   {initial_feas['excess_block_min']}")
-print(f" Excess surgeon minutes:     {initial_feas['excess_surgeon_min']}")
-print(f" Block availability viol:    {initial_feas['block_unavailable_viol']}")
-print(f" Surgeon availability viol:  {initial_feas['surg_unavailable_viol']}")
-print(f" Feasibility score:          {initial_feas['feasibility_score']}")
-
-# Global overview
-print("\n>>> Global Overview (Initial)")
-print(f" Total scheduled patients = {len(initial_assignments_seq)}")
-print(f" Total capacity minutes   = {initial_rooms_free['cap_min'].sum()}")
-print(f" Total used minutes       = {initial_rooms_free['used_min'].sum()}")
-print(f" Total free minutes       = {initial_rooms_free['free_min'].sum()}")
-print(f" Global utilization       = {initial_rooms_free['used_min'].sum() / initial_rooms_free['cap_min'].sum():.3f}")
-
-print("\n=======================================================\n")

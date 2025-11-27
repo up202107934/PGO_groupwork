@@ -552,27 +552,28 @@ def sequence_global_by_surgeon(assignments_enriched, C_PER_SHIFT, CLEANUP, TOLER
         for room, df_room in df_ds.groupby("room", sort=False):
             df_room = df_room.copy()
 
-            if has_order_hint:
-                # NOVO: seguir a ordem indicada por order_hint dentro do bloco
+            if has_order_hint and df_room["order_hint"].notna().any():
+                # usar ordem_hint APENAS depois da ILS ter mexido na ordem
                 df_room_ordered = df_room.sort_values("order_hint", kind="mergesort")
             else:
-                # COMPORTAMENTO ANTIGO
                 surg_stats = (
                     df_room.groupby("surgeon_id", as_index=False)
                            .agg(total_dur=("duration","sum"),
                                 n_cases=("patient_id","count"))
                 ).sort_values(["total_dur","n_cases"], ascending=[False,False])
-
+            
                 ordered_list = []
                 for _, srow in surg_stats.iterrows():
                     sid = srow["surgeon_id"]
                     sub = df_room[df_room["surgeon_id"] == sid].copy()
                     sub = sub.sort_values("duration", ascending=True)
                     ordered_list.append(sub)
+            
                 if ordered_list:
                     df_room_ordered = pd.concat(ordered_list, ignore_index=True)
                 else:
                     df_room_ordered = df_room.copy()
+
 
             room_queues[room] = list(df_room_ordered["orig_idx"].values)
 
@@ -956,20 +957,18 @@ initial_eval = evaluate_schedule(
 N_ILS_ITER = 30
 
 # 1) SOLUÇÃO CORRENTE = solução inicial ENRIQUECIDA (depois do heurístico)
-current_enriched = df_assignments.merge(
-    df_patients[["patient_id","duration","priority","waiting"]],
-    on="patient_id",
-    how="left"
-)
+# Começa da solução inicial já sequenciada
+current_enriched = initial_assignments_enriched.copy()
 
-# ordem base por bloco (se quisermos um ponto de partida determinístico)
-current_enriched["order_hint"] = (
-    current_enriched.groupby(["room", "day", "shift"])
-                    .cumcount()
-)
+# Usa a sequência atual como ponto de partida dos order_hints
+current_enriched["order_hint"] = current_enriched["seq_in_block"]
 
+# calcular score inicial (vai dar igual ao initial_eval)
 current_score, current_seq, current_rooms_free, current_feas, _ = \
     full_evaluation_from_enriched(current_enriched)
+
+
+
 
 best_score = current_score
 best_enriched = current_enriched.copy()
