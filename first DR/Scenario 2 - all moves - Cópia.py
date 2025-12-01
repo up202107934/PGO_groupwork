@@ -8,13 +8,12 @@ Author: Joana
 from pathlib import Path
 import re
 import ast
-import itertools
 import pandas as pd
 
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "Instance_C3_30.dat"
+DATA_FILE = "Instance_C1_30.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
@@ -803,9 +802,9 @@ Depois simplesmente troca o número da sala entre eles, preservando dia e turno,
 
 def generate_neighbor_cross_room_swap(current_assignments):
     """
-    CROSS-ROOM SWAP (até 2x2):
-  troca blocos de 1 ou 2 cirurgias entre duas salas do MESMO dia e turno.
-  Possibilidades: 1↔1, 2↔1, 1↔2 ou 2↔2.
+    CROSS-ROOM SWAP:
+    troca duas cirurgias entre duas salas do MESMO dia e turno.
+    Mantém viabilidade quase sempre (1 sai, 1 entra).
     
     Retorna:
       - neighbor: novo dataframe com swap aplicado
@@ -816,72 +815,50 @@ def generate_neighbor_cross_room_swap(current_assignments):
     if len(a) < 2:
         return a, None
 
-    # candidatos: pares de salas no mesmo dia/turno com cirurgias
+    # escolher só cirurgias que estão realmente agendadas
     sched = a.copy()
-    
-    block_pairs = []
-    for (day, shift), df_ds in sched.groupby(["day", "shift"]):
-        rooms = df_ds["room"].unique().tolist()
-        if len(rooms) < 2:
-            continue
-        for roomA, roomB in itertools.combinations(rooms, 2):
-            df_a = df_ds[df_ds["room"] == roomA]
-            df_b = df_ds[df_ds["room"] == roomB]
-            if df_a.empty or df_b.empty:
-                continue
-            block_pairs.append((day, shift, roomA, roomB, df_a, df_b))
 
     # escolher pares que estejam no MESMO dia e shift mas SALAS diferentes
-    if not block_pairs:
+    sched_pairs = sched.merge(
+        sched,
+        on=["day", "shift"],
+        suffixes=("_A", "_B")
+    )
+
+    # remover pares com mesma sala ou mesmo paciente
+    sched_pairs = sched_pairs[
+        (sched_pairs["patient_id_A"] != sched_pairs["patient_id_B"]) &
+        (sched_pairs["room_A"] != sched_pairs["room_B"])
+    ]
+
+    if len(sched_pairs) == 0:
         return a, None
 
     # escolher um par aleatório
-    day, shift, roomA, roomB, df_a, df_b = random.choice(block_pairs)
+    row = sched_pairs.sample(1).iloc[0]
 
-    size_options = [(1, 1), (2, 1), (1, 2), (2, 2)]
-    size_options = [
-        (sa, sb) for sa, sb in size_options
-        if len(df_a) >= sa and len(df_b) >= sb
-    ]
-    if not size_options:
-        return a, None
+    pidA = int(row["patient_id_A"])
+    pidB = int(row["patient_id_B"])
+
+    roomA = int(row["room_A"])
+    roomB = int(row["room_B"])
 
     # swap das salas
-    size_a, size_b = random.choice(size_options)
-    patients_a = random.sample(df_a["patient_id"].tolist(), size_a)
-    patients_b = random.sample(df_b["patient_id"].tolist(), size_b)
-
-    neighbor = a.copy()
-    neighbor.loc[neighbor["patient_id"].isin(patients_a), "room"] = roomB
-    neighbor.loc[neighbor["patient_id"].isin(patients_b), "room"] = roomA
-
-    # validar capacidade após o swap (cada bloco não pode ultrapassar C_PER_SHIFT + TOLERANCE)
-    def block_capacity(room):
-        row = df_rooms[(df_rooms["room"] == room) & (df_rooms["day"] == day) & (df_rooms["shift"] == shift)]
-        if row.empty:
-            return 0
-        return C_PER_SHIFT if int(row.iloc[0]["available"]) == 1 else 0
-
-    cap_ok = True
-    for room in (roomA, roomB):
-        used = neighbor[(neighbor["room"] == room) & (neighbor["day"] == day) & (neighbor["shift"] == shift)]["used_min"].sum()
-        if used > block_capacity(room) + TOLERANCE:
-            cap_ok = False
-            break
-
-    if not cap_ok:
-        return a, None
+    a.loc[a["patient_id"] == pidA, "room"] = roomB
+    a.loc[a["patient_id"] == pidB, "room"] = roomA
 
     swap_info = {
-        "day": int(day),
-        "shift": int(shift),
-        "roomA": int(roomA),
-        "roomB": int(roomB),
-        "from_roomA_to_roomB": [int(pid) for pid in patients_a],
-        "from_roomB_to_roomA": [int(pid) for pid in patients_b],       
+        "pidA": pidA,
+        "pidB": pidB,
+        "roomA_before": roomA,
+        "roomB_before": roomB,
+        "roomA_after": roomB,
+        "roomB_after": roomA,
+        "day": int(row["day"]),
+        "shift": int(row["shift"])
     }
 
-    return neighbor, swap_info
+    return a, swap_info
 
 
 
