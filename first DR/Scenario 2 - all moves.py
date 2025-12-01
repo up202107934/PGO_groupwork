@@ -14,7 +14,7 @@ import pandas as pd
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "Instance_CV_30.dat"
+DATA_FILE = "Instance_NC_30.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
