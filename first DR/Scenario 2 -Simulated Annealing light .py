@@ -8,12 +8,18 @@ Author: Joana
 from pathlib import Path
 import re
 import ast
+import itertools
 import pandas as pd
+import random
+import numpy as np
 
+# Fix seeds
+random.seed(42)
+np.random.seed(42)
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "Instance_C1_30.dat"
+DATA_FILE = "Instance_CV_30.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
@@ -460,6 +466,70 @@ def generate_neighbor_swap(current_assignments,         #Swap com remoção/admi
 import random
 
 
+def generate_neighbor_add_only(current_assignments,
+                               df_patients,
+                               df_rooms,
+                               df_surgeons,
+                               C_PER_SHIFT,
+                               max_add=2):
+    """Tenta apenas INSERIR pacientes não agendados (sem remover ninguém).
+
+    Retorna um novo assignments e a lista de pacientes realmente adicionados.
+    """
+    assignments = current_assignments.copy()
+
+    scheduled_ids = set(assignments["patient_id"].unique().tolist())
+    unassigned_ids = [
+        pid for pid in df_patients["patient_id"].unique().tolist()
+        if pid not in scheduled_ids
+    ]
+
+    if not unassigned_ids:
+        return assignments, []
+
+    random.shuffle(unassigned_ids)
+    ids_in_candidates = unassigned_ids[:max_add]
+    ids_in_effective = []
+
+    for pid in ids_in_candidates:
+        prow = df_patients[df_patients["patient_id"] == pid]
+        if prow.empty:
+            continue
+        prow = prow.iloc[0]
+
+        cand_blocks = candidate_blocks_for_patient_in_solution(
+            assignments, prow, df_rooms, df_surgeons, C_PER_SHIFT
+        )
+
+        if len(cand_blocks) == 0:
+            continue
+
+        chosen = cand_blocks.sample(1).iloc[0]
+        need = int(prow["duration"]) + CLEANUP
+
+        new_row = {
+            "patient_id": int(pid),
+            "room": int(chosen["room"]),
+            "day": int(chosen["day"]),
+            "shift": int(chosen["shift"]),
+            "used_min": need,
+            "surgeon_id": int(prow["surgeon_id"]),
+            "iteration": -1,
+            "W_patient": 0.0,
+            "W_block": 0.0,
+        }
+
+        assignments = pd.concat(
+            [assignments, pd.DataFrame([new_row])],
+            ignore_index=True
+        )
+
+        ids_in_effective.append(int(pid))
+
+    return assignments, ids_in_effective
+
+
+
 """
 Cálculo dos blocos viáveis para inserir um paciente
 A função candidate_blocks_for_patient_in_solution (ver a seguir) verifica disponibilidade do cirurgião e das salas,
@@ -802,9 +872,9 @@ Depois simplesmente troca o número da sala entre eles, preservando dia e turno,
 
 def generate_neighbor_cross_room_swap(current_assignments):
     """
-    CROSS-ROOM SWAP:
-    troca duas cirurgias entre duas salas do MESMO dia e turno.
-    Mantém viabilidade quase sempre (1 sai, 1 entra).
+    CROSS-ROOM SWAP (até 2x2):
+  troca blocos de 1 ou 2 cirurgias entre duas salas do MESMO dia e turno.
+  Possibilidades: 1↔1, 2↔1, 1↔2 ou 2↔2.
     
     Retorna:
       - neighbor: novo dataframe com swap aplicado
@@ -815,50 +885,72 @@ def generate_neighbor_cross_room_swap(current_assignments):
     if len(a) < 2:
         return a, None
 
-    # escolher só cirurgias que estão realmente agendadas
+    # candidatos: pares de salas no mesmo dia/turno com cirurgias
     sched = a.copy()
+    
+    block_pairs = []
+    for (day, shift), df_ds in sched.groupby(["day", "shift"]):
+        rooms = df_ds["room"].unique().tolist()
+        if len(rooms) < 2:
+            continue
+        for roomA, roomB in itertools.combinations(rooms, 2):
+            df_a = df_ds[df_ds["room"] == roomA]
+            df_b = df_ds[df_ds["room"] == roomB]
+            if df_a.empty or df_b.empty:
+                continue
+            block_pairs.append((day, shift, roomA, roomB, df_a, df_b))
 
     # escolher pares que estejam no MESMO dia e shift mas SALAS diferentes
-    sched_pairs = sched.merge(
-        sched,
-        on=["day", "shift"],
-        suffixes=("_A", "_B")
-    )
-
-    # remover pares com mesma sala ou mesmo paciente
-    sched_pairs = sched_pairs[
-        (sched_pairs["patient_id_A"] != sched_pairs["patient_id_B"]) &
-        (sched_pairs["room_A"] != sched_pairs["room_B"])
-    ]
-
-    if len(sched_pairs) == 0:
+    if not block_pairs:
         return a, None
 
     # escolher um par aleatório
-    row = sched_pairs.sample(1).iloc[0]
+    day, shift, roomA, roomB, df_a, df_b = random.choice(block_pairs)
 
-    pidA = int(row["patient_id_A"])
-    pidB = int(row["patient_id_B"])
-
-    roomA = int(row["room_A"])
-    roomB = int(row["room_B"])
+    size_options = [(1, 1), (2, 1), (1, 2), (2, 2)]
+    size_options = [
+        (sa, sb) for sa, sb in size_options
+        if len(df_a) >= sa and len(df_b) >= sb
+    ]
+    if not size_options:
+        return a, None
 
     # swap das salas
-    a.loc[a["patient_id"] == pidA, "room"] = roomB
-    a.loc[a["patient_id"] == pidB, "room"] = roomA
+    size_a, size_b = random.choice(size_options)
+    patients_a = random.sample(df_a["patient_id"].tolist(), size_a)
+    patients_b = random.sample(df_b["patient_id"].tolist(), size_b)
+
+    neighbor = a.copy()
+    neighbor.loc[neighbor["patient_id"].isin(patients_a), "room"] = roomB
+    neighbor.loc[neighbor["patient_id"].isin(patients_b), "room"] = roomA
+
+    # validar capacidade após o swap (cada bloco não pode ultrapassar C_PER_SHIFT + TOLERANCE)
+    def block_capacity(room):
+        row = df_rooms[(df_rooms["room"] == room) & (df_rooms["day"] == day) & (df_rooms["shift"] == shift)]
+        if row.empty:
+            return 0
+        return C_PER_SHIFT if int(row.iloc[0]["available"]) == 1 else 0
+
+    cap_ok = True
+    for room in (roomA, roomB):
+        used = neighbor[(neighbor["room"] == room) & (neighbor["day"] == day) & (neighbor["shift"] == shift)]["used_min"].sum()
+        if used > block_capacity(room) + TOLERANCE:
+            cap_ok = False
+            break
+
+    if not cap_ok:
+        return a, None
 
     swap_info = {
-        "pidA": pidA,
-        "pidB": pidB,
-        "roomA_before": roomA,
-        "roomB_before": roomB,
-        "roomA_after": roomB,
-        "roomB_after": roomA,
-        "day": int(row["day"]),
-        "shift": int(row["shift"])
+        "day": int(day),
+        "shift": int(shift),
+        "roomA": int(roomA),
+        "roomB": int(roomB),
+        "from_roomA_to_roomB": [int(pid) for pid in patients_a],
+        "from_roomB_to_roomA": [int(pid) for pid in patients_b],       
     }
 
-    return a, swap_info
+    return neighbor, swap_info
 
 
 
@@ -1141,8 +1233,13 @@ best_seq = current_seq.copy()
 best_rooms_free = current_rooms_free.copy()
 best_feas = current_feas  
 
+#ILS 1- swap i->j
 print("\nILS START")
 print("Initial score:", current_score)
+
+T = 0.005                # temperatura inicial SA-light
+cooling = 0.995          # arrefecimento
+import numpy as np
 
 for it in range(N_ILS_ITER):
 
@@ -1159,8 +1256,16 @@ for it in range(N_ILS_ITER):
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
 
-    # Aceitar se SCORE melhorar
-    if neigh_score > current_score:
+    # ----- SA-light ACCEPTANCE RULE -----
+    delta = neigh_score - current_score
+
+    if delta > 0:
+        accept = True  # melhoria => aceitar sempre
+    else:
+        prob = np.exp(delta / T)       # delta < 0 → prob < 1
+        accept = (random.random() < prob)
+
+    if accept:
         current_assignments = neighbor.copy()
         current_score = neigh_score
 
@@ -1170,12 +1275,68 @@ for it in range(N_ILS_ITER):
             best_assignments = neighbor.copy()
             best_seq = neigh_seq.copy()
             best_rooms_free = neigh_rooms_free.copy()
-            best_feas = neigh_feas 
+            best_feas = neigh_feas
 
-        print(f"[Iter {it}] Improved score to {current_score:.4f} | "
-              f"removed={ids_out} | added={ids_in}")
-    else:
-       None
+        print(f"[Iter {it}] ACCEPTED | Score={current_score:.4f} | Δ={delta:.4f} | T={T:.4f} | removed={ids_out} | added={ids_in}")
+
+    # ---------- Cooling ----------
+    T *= cooling
+
+       
+       
+# ============================================================
+#     ILS #2 — ADD-ONLY (INSERIR SEM REMOVER)
+# ============================================================
+
+print("\n\n========== STARTING ILS #2 — ADD-ONLY ==========\n")
+
+current_assignments = best_assignments.copy()
+current_score, current_seq, current_rooms_free, current_feas, _ = \
+    full_evaluation(current_assignments)
+
+best_score = current_score
+best_assignments = current_assignments.copy()
+best_seq = current_seq.copy()
+best_rooms_free = current_rooms_free.copy()
+best_feas = current_feas
+
+N_ILS2_ITER = 50
+
+print("Initial add-only score:", current_score)
+
+for it in range(N_ILS2_ITER):
+
+    neighbor, ids_added = generate_neighbor_add_only(
+        current_assignments,
+        df_patients,
+        df_rooms,
+        df_surgeons,
+        C_PER_SHIFT,
+        max_add=2
+    )
+
+    if not ids_added:
+        continue
+
+    neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = \
+        full_evaluation(neighbor)
+
+    if neigh_score > current_score:
+        current_assignments = neighbor.copy()
+        current_score = neigh_score
+
+        if neigh_score > best_score:
+            best_score = neigh_score
+            best_assignments = neighbor.copy()
+            best_seq = neigh_seq.copy()
+            best_rooms_free = neigh_rooms_free.copy()
+            best_feas = neigh_feas
+
+        print(
+            f"[ILS2 Iter {it}] Improved score to {current_score:.4f} | "
+            f"added={ids_added}"
+        )
+
        
 
 # ============================================================
@@ -1232,12 +1393,12 @@ df_surgeon_free = best_surgeon_free.copy()
 #END OF FIRST ILS
 
 # =========================================================
-#        ILS #2 — RESEQUENCING (mudar a ordem dentro dos blocos)
+#        ILS #3 — RESEQUENCING (mudar a ordem dentro dos blocos)
 # =========================================================
 
 print("\n\n========== STARTING ILS #2 — RESEQUENCE ==========\n")
 
-# ponto de partida = melhor solução da ILS #1
+# ponto de partida = melhor solução da ILS #2
 current_enriched = assignments_enriched.copy()
 
 # inicializar order_hint com a sequência existente
@@ -1289,7 +1450,7 @@ for it in range(N_ILS_ITER):
         status = "GLOBAL_BEST" if improved_global else "LOCAL_IMPROVEMENT"
 
         print(
-            f"[ILS2 Iter {it:02d}] {status} | "
+            f"[ILS3 Iter {it:02d}] {status} | "
             f"current: {old_current:.4f} -> {current_score:.4f} | "
             f"best: {old_best:.4f} -> {best_score:.4f}"
         )
@@ -1308,13 +1469,13 @@ for it in range(N_ILS_ITER):
             print(f"     before: {before_str}")
             print(f"     after : {after_str}")
 
-print("\n========== END OF ILS #2 ==========\n")
+print("\n========== END OF ILS #3 ==========\n")
 
 # =========================================================
 #        ILS #3 — CROSS-ROOM SWAP (change surgeries from one room to another within the same shift )
 # =========================================================
 
-print("\n\n========== STARTING ILS #3 — CROSS-ROOM SWAP ==========\n")
+print("\n\n========== STARTING ILS #4 — CROSS-ROOM SWAP ==========\n")
 
 # ponto de partida = melhor solução da ILS2
 current_assignments = best_assignments.copy()
@@ -1324,16 +1485,17 @@ current_score, current_seq, current_rooms_free, current_feas, _ = \
     full_evaluation(current_assignments)
 
 best_score = current_score
-best_assignments_3 = current_assignments.copy()
-best_seq_3 = current_seq.copy()
-best_rooms_free_3 = current_rooms_free.copy()
-best_feas_3 = current_feas
+best_assignments_4 = current_assignments.copy()
+best_seq_4 = current_seq.copy()
+best_rooms_free_4 = current_rooms_free.copy()
+best_feas_4 = current_feas
 
-print("Initial score (ILS3):", current_score)
 
-N_ILS3_ITER = 50
+print("Initial score (ILS4):", current_score)
 
-for it in range(N_ILS3_ITER):
+N_ILS4_ITER = 50
+
+for it in range(N_ILS4_ITER):
 
     neighbor, swap_info = generate_neighbor_cross_room_swap(current_assignments)
 
@@ -1351,23 +1513,24 @@ for it in range(N_ILS3_ITER):
         if neigh_score > best_score:
             improved_global = True
             best_score = neigh_score
-            best_assignments_3 = neighbor.copy()
-            best_seq_3 = neigh_seq.copy()
-            best_rooms_free_3 = neigh_rooms_free.copy()
-            best_feas_3 = neigh_feas
+            best_assignments_4 = neighbor.copy()
+            best_seq_4 = neigh_seq.copy()
+            best_rooms_free_4 = neigh_rooms_free.copy()
+            best_feas_4 = neigh_feas
+
 
         print(
-            f"[ILS3 Iter {it}] {'GLOBAL' if improved_global else 'LOCAL'} "
+            f"[ILS4 Iter {it}] {'GLOBAL' if improved_global else 'LOCAL'} "
             f"score improved: {neigh_score:.4f}"
         )
         print(f"   ↪ swap p{swap_info['pidA']} ↔ p{swap_info['pidB']} "
               f"(day={swap_info['day']} shift={swap_info['shift']}) "
               f"rooms {swap_info['roomA_before']} ↔ {swap_info['roomB_before']}")
 
-print("\n========== END OF ILS #3 ==========\n")
+print("\n========== END OF ILS #4 ==========\n")
 
-# atualizar solução final com o melhor da ILS3
-best_assignments = best_assignments_3.copy()
+# atualizar solução final com o melhor da ILS4
+best_assignments = best_assignments_4.copy()
 best_assignments_enriched = best_assignments.merge(
     df_patients[["patient_id","duration","priority","waiting"]],
     on="patient_id",
