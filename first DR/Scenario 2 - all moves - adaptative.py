@@ -10,11 +10,18 @@ import re
 import ast
 import itertools
 import pandas as pd
+import random
+import numpy as np
+
+# Fix seeds
+random.seed(42)
+np.random.seed(42)
+
 
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "Instance_NC_30.dat"
+DATA_FILE = "Instance_C1_30.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
@@ -456,9 +463,6 @@ def generate_neighbor_swap(current_assignments,         #Swap com remoção/admi
 
     return assignments, ids_out, ids_in_effective
 
-
-
-import random
 
 
 def generate_neighbor_add_only(current_assignments,
@@ -1166,12 +1170,25 @@ initial_eval = evaluate_schedule(
 
     
 # =========================================================
-#        FISRT ITERATED LOCAL SEARCH 
+#        FIRST ITERATED LOCAL SEARCH — ADAPTIVE PERTURBATION
 # =========================================================
 
-N_ILS_ITER = 100
-MAX_SWAP_OUT = 2
-MAX_SWAP_IN  = 2
+# mais iterações para dar tempo à perturbação de atuar
+N_ILS_ITER = 300  
+
+# limites para o tamanho do swap (nº de pacientes removidos/adicionados)
+MIN_SWAP_OUT = 2
+MIN_SWAP_IN  = 2
+MAX_SWAP_OUT_LIMIT = 6   # força máxima da perturbação (podes afinar)
+MAX_SWAP_IN_LIMIT  = 6
+
+# valores correntes da perturbação (começam no mínimo)
+cur_swap_out = MIN_SWAP_OUT
+cur_swap_in  = MIN_SWAP_IN
+
+# contagem de iterações sem melhoria
+NO_IMPROV_LIMIT = 5   # depois de 5 iterações sem melhorar → aumentar perturbação
+no_improv = 0         # começa a 0
 
 # 1) SOLUÇÃO CORRENTE = SOLUÇÃO INICIAL (DEPOIS DO HEURÍSTICO)
 current_assignments = df_assignments.copy()
@@ -1194,7 +1211,7 @@ def full_evaluation(assignments):
         ROOM_CHANGE_TIME=ROOM_CHANGE_TIME
     )
 
-    seq = enriched[enriched["scheduled_by_seq"]==1].copy()
+    seq = enriched[enriched["scheduled_by_seq"] == 1].copy()
 
     # 3) Recalcular rooms_free
     rooms_free = build_room_free_from_assignments(seq, df_rooms, C_PER_SHIFT)
@@ -1233,37 +1250,66 @@ print("Initial score:", current_score)
 
 for it in range(N_ILS_ITER):
 
-    # Gerar vizinho (swap i↔j)
+    # Gerar vizinho (swap i↔j) com a força ATUAL da perturbação
     neighbor, ids_out, ids_in = generate_neighbor_swap(
         current_assignments,
         df_patients,
         df_rooms,
         df_surgeons,
         C_PER_SHIFT,
-        max_swap_out=MAX_SWAP_OUT,
-        max_swap_in=MAX_SWAP_IN
+        max_swap_out=cur_swap_out,
+        max_swap_in=cur_swap_in
     )
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
 
-    # Aceitar se SCORE melhorar
+    # --- ACEITAÇÃO: só se melhorar (hill-climbing) ---
     if neigh_score > current_score:
+        # aceitamos o vizinho como solução corrente
         current_assignments = neighbor.copy()
         current_score = neigh_score
 
-        # Atualizar melhor global
+        # reset ao contador de estagnação
+        no_improv = 0
+
+        # se for melhor que o best global → atualiza best
         if neigh_score > best_score:
             best_score = neigh_score
             best_assignments = neighbor.copy()
             best_seq = neigh_seq.copy()
             best_rooms_free = neigh_rooms_free.copy()
-            best_feas = neigh_feas 
+            best_feas = neigh_feas
 
-        print(f"[Iter {it}] Improved score to {current_score:.4f} | "
-              f"removed={ids_out} | added={ids_in}")
+        # sempre que há melhoria, voltamos à perturbação "fraca"
+        cur_swap_out = MIN_SWAP_OUT
+        cur_swap_in  = MIN_SWAP_IN
+
+        print(
+            f"[ILS1 Iter {it}] IMPROVED to {current_score:.4f} | "
+            f"removed={ids_out} | added={ids_in} | "
+            f"swap_out={cur_swap_out}, swap_in={cur_swap_in}"
+        )
+
     else:
-       None
-       
+        # não houve melhoria
+        no_improv += 1
+
+        # se já estamos há muito tempo sem melhorar → aumentar força da perturbação
+        if no_improv >= NO_IMPROV_LIMIT:
+            old_out, old_in = cur_swap_out, cur_swap_in
+
+            cur_swap_out = min(cur_swap_out + 1, MAX_SWAP_OUT_LIMIT)
+            cur_swap_in  = min(cur_swap_in  + 1, MAX_SWAP_IN_LIMIT)
+
+            no_improv = 0  # reset ao contador
+
+            print(
+                f"[ILS1 Iter {it}] NO IMPROVEMENT for {NO_IMPROV_LIMIT} iters → "
+                f"increasing perturbation: "
+                f"swap_out {old_out}→{cur_swap_out}, "
+                f"swap_in {old_in}→{cur_swap_in}"
+            )
+     
        
 # ============================================================
 #     ILS #2 — ADD-ONLY (INSERIR SEM REMOVER)
@@ -1504,9 +1550,14 @@ for it in range(N_ILS4_ITER):
             f"[ILS4 Iter {it}] {'GLOBAL' if improved_global else 'LOCAL'} "
             f"score improved: {neigh_score:.4f}"
         )
-        print(f"   ↪ swap p{swap_info['pidA']} ↔ p{swap_info['pidB']} "
-              f"(day={swap_info['day']} shift={swap_info['shift']}) "
-              f"rooms {swap_info['roomA_before']} ↔ {swap_info['roomB_before']}")
+        print(
+            f"   ↪ day={swap_info['day']}, shift={swap_info['shift']}, "
+            f"room {swap_info['roomA']} → {swap_info['roomB']}: "
+            f"patients {swap_info['from_roomA_to_roomB']} ; "
+            f"room {swap_info['roomB']} → {swap_info['roomA']}: "
+            f"patients {swap_info['from_roomB_to_roomA']}"
+        )
+
 
 print("\n========== END OF ILS #4 ==========\n")
 
