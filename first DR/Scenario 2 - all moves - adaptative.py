@@ -21,7 +21,7 @@ np.random.seed(42)
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "Instance_C1_30.dat"
+DATA_FILE = "Instance_C2_30.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
@@ -1191,9 +1191,9 @@ NO_IMPROV_LIMIT = 5   # depois de 5 iterações sem melhorar → aumentar pertur
 no_improv = 0         # começa a 0
 
 # parâmetros de aceitação (simulated annealing light)
-ACCEPT_TEMP_START = 0.05  # temperatura inicial (controla a probabilidade de aceitar piores)
-ACCEPT_TEMP_DECAY = 0.995 # fator de decaimento por iteração
-ACCEPT_TEMP_MIN = 0.005   # não deixar a temperatura chegar a 0
+ACCEPT_TEMP_START = 0.02  # temperatura inicial (controla a probabilidade de aceitar piores)
+ACCEPT_TEMP_DECAY = 0.99 # fator de decaimento por iteração
+ACCEPT_TEMP_MIN = 0.001   # não deixar a temperatura chegar a 0
 cur_temp = ACCEPT_TEMP_START
 
 
@@ -1272,6 +1272,7 @@ for it in range(N_ILS_ITER):
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
 
     delta = neigh_score - current_score
+    delta_best = neigh_score - best_score 
 
     # probabilidade de aceitação (melhora sempre; piora aceita com prob. e^(-|delta|/T))
     accept_prob = 1.0 if delta >= 0 else math.exp(delta / max(cur_temp, 1e-6))
@@ -1281,7 +1282,7 @@ for it in range(N_ILS_ITER):
         current_assignments = neighbor.copy()
         current_score = neigh_score
 
-        if delta > 0:
+        if delta_best > 0:
             # reset ao contador de estagnação
             no_improv = 0
 
