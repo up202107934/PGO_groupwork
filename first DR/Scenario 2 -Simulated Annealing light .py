@@ -10,22 +10,24 @@ import re
 import ast
 import itertools
 import pandas as pd
+import random
+import numpy as np
 
+# Fix seeds
+random.seed(42)
+np.random.seed(42)
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-
-
-DATA_FILE = "Instance_NC_30.dat"
-
+DATA_FILE = "Instance_CV_30.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
 
-ALPHA1 = 0.70 # priority
-ALPHA2 = 0.10  # waited days
-ALPHA3 = 0.05 # deadline closeness
-ALPHA4 = 0.05 # feasible blocks
+ALPHA1 = 0.25 # priority
+ALPHA2 = 0.25  # waited days
+ALPHA3 = 0.25 # deadline closeness
+ALPHA4 = 0.25 # feasible blocks
 
 ALPHA5 = 1/3
 ALPHA6 = 1/3
@@ -1231,8 +1233,13 @@ best_seq = current_seq.copy()
 best_rooms_free = current_rooms_free.copy()
 best_feas = current_feas  
 
+#ILS 1- swap i->j
 print("\nILS START")
 print("Initial score:", current_score)
+
+T = 0.005                # temperatura inicial SA-light
+cooling = 0.995          # arrefecimento
+import numpy as np
 
 for it in range(N_ILS_ITER):
 
@@ -1249,8 +1256,16 @@ for it in range(N_ILS_ITER):
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
 
-    # Aceitar se SCORE melhorar
-    if neigh_score > current_score:
+    # ----- SA-light ACCEPTANCE RULE -----
+    delta = neigh_score - current_score
+
+    if delta > 0:
+        accept = True  # melhoria => aceitar sempre
+    else:
+        prob = np.exp(delta / T)       # delta < 0 → prob < 1
+        accept = (random.random() < prob)
+
+    if accept:
         current_assignments = neighbor.copy()
         current_score = neigh_score
 
@@ -1260,12 +1275,13 @@ for it in range(N_ILS_ITER):
             best_assignments = neighbor.copy()
             best_seq = neigh_seq.copy()
             best_rooms_free = neigh_rooms_free.copy()
-            best_feas = neigh_feas 
+            best_feas = neigh_feas
 
-        print(f"[Iter {it}] Improved score to {current_score:.4f} | "
-              f"removed={ids_out} | added={ids_in}")
-    else:
-       None
+        print(f"[Iter {it}] ACCEPTED | Score={current_score:.4f} | Δ={delta:.4f} | T={T:.4f} | removed={ids_out} | added={ids_in}")
+
+    # ---------- Cooling ----------
+    T *= cooling
+
        
        
 # ============================================================
