@@ -12,7 +12,7 @@ import itertools
 import pandas as pd
 import random
 import numpy as np
-
+import math
 # Fix seeds
 random.seed(42)
 np.random.seed(42)
@@ -1190,6 +1190,14 @@ cur_swap_in  = MIN_SWAP_IN
 NO_IMPROV_LIMIT = 5   # depois de 5 iterações sem melhorar → aumentar perturbação
 no_improv = 0         # começa a 0
 
+# parâmetros de aceitação (simulated annealing light)
+ACCEPT_TEMP_START = 0.05  # temperatura inicial (controla a probabilidade de aceitar piores)
+ACCEPT_TEMP_DECAY = 0.995 # fator de decaimento por iteração
+ACCEPT_TEMP_MIN = 0.005   # não deixar a temperatura chegar a 0
+cur_temp = ACCEPT_TEMP_START
+
+
+
 # 1) SOLUÇÃO CORRENTE = SOLUÇÃO INICIAL (DEPOIS DO HEURÍSTICO)
 current_assignments = df_assignments.copy()
 
@@ -1263,52 +1271,69 @@ for it in range(N_ILS_ITER):
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
 
-    # --- ACEITAÇÃO: só se melhorar (hill-climbing) ---
-    if neigh_score > current_score:
-        # aceitamos o vizinho como solução corrente
+    delta = neigh_score - current_score
+
+    # probabilidade de aceitação (melhora sempre; piora aceita com prob. e^(-|delta|/T))
+    accept_prob = 1.0 if delta >= 0 else math.exp(delta / max(cur_temp, 1e-6))
+
+    if random.random() < accept_prob:
+        # aceitamos o vizinho (mesmo que seja ligeiramente pior)
         current_assignments = neighbor.copy()
         current_score = neigh_score
 
-        # reset ao contador de estagnação
-        no_improv = 0
+        if delta > 0:
+            # reset ao contador de estagnação
+            no_improv = 0
 
         # se for melhor que o best global → atualiza best
-        if neigh_score > best_score:
-            best_score = neigh_score
-            best_assignments = neighbor.copy()
-            best_seq = neigh_seq.copy()
-            best_rooms_free = neigh_rooms_free.copy()
-            best_feas = neigh_feas
+            if neigh_score > best_score:
+                best_score = neigh_score
+                best_assignments = neighbor.copy()
+                best_seq = neigh_seq.copy()
+                best_rooms_free = neigh_rooms_free.copy()
+                best_feas = neigh_feas
 
-        # sempre que há melhoria, voltamos à perturbação "fraca"
-        cur_swap_out = MIN_SWAP_OUT
-        cur_swap_in  = MIN_SWAP_IN
-
-        print(
-            f"[ILS1 Iter {it}] IMPROVED to {current_score:.4f} | "
-            f"removed={ids_out} | added={ids_in} | "
-            f"swap_out={cur_swap_out}, swap_in={cur_swap_in}"
-        )
+            # sempre que há melhoria, voltamos à perturbação "fraca"
+            cur_swap_out = MIN_SWAP_OUT
+            cur_swap_in  = MIN_SWAP_IN
+            
+            print(
+                f"[ILS1 Iter {it}] IMPROVED to {current_score:.4f} | "
+                f"removed={ids_out} | added={ids_in} | "
+                f"swap_out={cur_swap_out}, swap_in={cur_swap_in}"
+            )
+        else:
+            # aceitação por diversificação (piora controlada)
+            no_improv += 1
+            print(
+                f"[ILS1 Iter {it}] ACCEPTED WORSE ({current_score:.4f}) with Δ={delta:.4f} | "
+                f"temp={cur_temp:.4f} | removed={ids_out} | added={ids_in}"
+            )
 
     else:
-        # não houve melhoria
+        # não houve aceitação (fica solução corrente)
         no_improv += 1
 
         # se já estamos há muito tempo sem melhorar → aumentar força da perturbação
-        if no_improv >= NO_IMPROV_LIMIT:
-            old_out, old_in = cur_swap_out, cur_swap_in
+    if no_improv >= NO_IMPROV_LIMIT:
+        old_out, old_in = cur_swap_out, cur_swap_in
+        
+        cur_swap_out = min(cur_swap_out + 1, MAX_SWAP_OUT_LIMIT)
+        cur_swap_in  = min(cur_swap_in  + 1, MAX_SWAP_IN_LIMIT)
 
-            cur_swap_out = min(cur_swap_out + 1, MAX_SWAP_OUT_LIMIT)
-            cur_swap_in  = min(cur_swap_in  + 1, MAX_SWAP_IN_LIMIT)
+            
 
-            no_improv = 0  # reset ao contador
+        no_improv = 0  # reset ao contador
 
-            print(
-                f"[ILS1 Iter {it}] NO IMPROVEMENT for {NO_IMPROV_LIMIT} iters → "
-                f"increasing perturbation: "
-                f"swap_out {old_out}→{cur_swap_out}, "
-                f"swap_in {old_in}→{cur_swap_in}"
-            )
+        print(
+            f"[ILS1 Iter {it}] NO IMPROVEMENT for {NO_IMPROV_LIMIT} iters → "
+            f"increasing perturbation: "
+            f"swap_out {old_out}→{cur_swap_out}, "
+            f"swap_in {old_in}→{cur_swap_in}"
+        )
+
+    # arrefecimento da temperatura (não deixar chegar a zero)
+    cur_temp = max(cur_temp * ACCEPT_TEMP_DECAY, ACCEPT_TEMP_MIN)
      
        
 # ============================================================

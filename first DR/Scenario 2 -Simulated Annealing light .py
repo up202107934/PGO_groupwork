@@ -19,7 +19,7 @@ np.random.seed(42)
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "Instance_CV_30.dat"
+DATA_FILE = "Instance_C1_30.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
@@ -1523,9 +1523,14 @@ for it in range(N_ILS4_ITER):
             f"[ILS4 Iter {it}] {'GLOBAL' if improved_global else 'LOCAL'} "
             f"score improved: {neigh_score:.4f}"
         )
-        print(f"   ↪ swap p{swap_info['pidA']} ↔ p{swap_info['pidB']} "
-              f"(day={swap_info['day']} shift={swap_info['shift']}) "
-              f"rooms {swap_info['roomA_before']} ↔ {swap_info['roomB_before']}")
+        print(
+            f"   ↪ day={swap_info['day']}, shift={swap_info['shift']}, "
+            f"room {swap_info['roomA']} → {swap_info['roomB']}: "
+            f"patients {swap_info['from_roomA_to_roomB']} ; "
+            f"room {swap_info['roomB']} → {swap_info['roomA']}: "
+            f"patients {swap_info['from_roomB_to_roomA']}"
+        )
+
 
 print("\n========== END OF ILS #4 ==========\n")
 
