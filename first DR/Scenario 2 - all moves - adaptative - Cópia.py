@@ -21,7 +21,7 @@ np.random.seed(42)
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "Instance_C1_30.dat"
+DATA_FILE = "Instance_C2_30.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
@@ -1285,9 +1285,10 @@ for it in range(N_ILS_ITER):
         cur_swap_in  = MIN_SWAP_IN
 
         print(
-            f"[ILS1 Iter {it}] IMPROVED to {current_score:.4f} | "
-            f"removed={ids_out} | added={ids_in} | "
-            f"swap_out={cur_swap_out}, swap_in={cur_swap_in}"
+            #f"[ILS1 Iter {it}] IMPROVED to {current_score:.4f} | "
+            f"IMPROVED to {current_score:.4f} | "
+            #f"removed={ids_out} | added={ids_in} | "
+            #f"swap_out={cur_swap_out}, swap_in={cur_swap_in}"
         )
 
     else:
@@ -1304,10 +1305,11 @@ for it in range(N_ILS_ITER):
             no_improv = 0  # reset ao contador
 
             print(
-                f"[ILS1 Iter {it}] NO IMPROVEMENT for {NO_IMPROV_LIMIT} iters → "
-                f"increasing perturbation: "
-                f"swap_out {old_out}→{cur_swap_out}, "
-                f"swap_in {old_in}→{cur_swap_in}"
+                #f"[ILS1 Iter {it}] NO IMPROVEMENT for {NO_IMPROV_LIMIT} iters → "
+                f"  {neigh_score} "
+                #f"increasing perturbation: "
+                #f"swap_out {old_out}→{cur_swap_out}, "
+                #f"swap_in {old_in}→{cur_swap_in}"
             )
      
        
@@ -1315,7 +1317,7 @@ for it in range(N_ILS_ITER):
 #     ILS #2 — ADD-ONLY (INSERIR SEM REMOVER)
 # ============================================================
 
-print("\n\n========== STARTING ILS #2 — ADD-ONLY ==========\n")
+#print("\n\n========== STARTING ILS #2 — ADD-ONLY ==========\n")
 
 current_assignments = best_assignments.copy()
 current_score, current_seq, current_rooms_free, current_feas, _ = \
@@ -1329,7 +1331,7 @@ best_feas = current_feas
 
 N_ILS2_ITER = 50
 
-print("Initial add-only score:", current_score)
+#print("Initial add-only score:", current_score)
 
 for it in range(N_ILS2_ITER):
 
@@ -1360,8 +1362,9 @@ for it in range(N_ILS2_ITER):
             best_feas = neigh_feas
 
         print(
-            f"[ILS2 Iter {it}] Improved score to {current_score:.4f} | "
-            f"added={ids_added}"
+            #f"[ILS2 Iter {it}] Improved score to {current_score:.4f} | "
+            f" {current_score:.4f} | "
+            #f"added={ids_added}"
         )
 
        
@@ -1784,7 +1787,7 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
 
 # ---------- 8) TEXT-BASED SCHEDULE (formato tipo imagem) ----------
 
-print("\n==================== FINAL SCHEDULE ====================\n")
+"""print("\n==================== FINAL SCHEDULE ====================\n")
 
 if len(assignments_seq_view) == 0:
     print("(No assignments found — nothing to display.)")
@@ -1846,4 +1849,4 @@ best_eval = evaluate_schedule(
     excess_block_min=best_feas["excess_block_min"]
 )
 
-
+"""
