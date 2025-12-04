@@ -21,7 +21,7 @@ np.random.seed(42)
 # ------------------------------
 
 
-DATA_FILE = "Instance_NC_30.dat"
+DATA_FILE = "Instance_C1_30.dat"
 
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
@@ -956,6 +956,38 @@ def generate_neighbor_cross_room_swap(current_assignments):
     return neighbor, swap_info
 
 
+def format_cross_room_swap_info(swap_info):
+    """Format cross-room swap details without assuming specific keys.
+
+    Supports both the current swap_info structure (roomA/roomB and
+    from_roomA_to_roomB/from_roomB_to_roomA) and older variants that used
+    roomA_before/roomB_before with pidA/pidB. Missing pieces fall back to
+    '?', preventing KeyErrors in print statements.
+    """
+
+    def _normalize_patients(value):
+        if value is None:
+            return "?"
+        if isinstance(value, list):
+            return value
+        return [value]
+
+    roomA = swap_info.get("roomA", swap_info.get("roomA_before", "?"))
+    roomB = swap_info.get("roomB", swap_info.get("roomB_before", "?"))
+    patients_a = _normalize_patients(
+        swap_info.get("from_roomA_to_roomB", swap_info.get("pidA"))
+    )
+    patients_b = _normalize_patients(
+        swap_info.get("from_roomB_to_roomA", swap_info.get("pidB"))
+    )
+    day = swap_info.get("day", "?")
+    shift = swap_info.get("shift", "?")
+
+    return (
+        f"room{roomA}→room{roomB} p{patients_a} | "
+        f"room{roomB}→room{roomA} p{patients_b} "
+        f"(day={day}, shift={shift})"
+    )
 
 # ------------------------------
 # INITIAL PLANNING STATE
@@ -1509,14 +1541,9 @@ for it in range(N_ILS4_ITER):
     neighbor, swap_info = generate_neighbor_cross_room_swap(current_assignments)
 
     if swap_info is None:
-        print(f"[LS4 Iter {it}] Nenhum cross-room swap possível nesta iteração.")
+        #print(f"[LS4 Iter {it}] Nenhum cross-room swap possível nesta iteração.")
         continue
-    print(
-        f"[LS4 Iter {it}] Avaliação vizinhança cross-room: "
-        f"p{swap_info['pidA']}@room{swap_info['roomA_before']} ↔ "
-        f"p{swap_info['pidB']}@room{swap_info['roomB_before']} "
-        f"(day={swap_info['day']}, shift={swap_info['shift']})"
-    )
+    #print(f"[LS4 Iter {it}] Avaliação vizinhança cross-room: {format_cross_room_swap_info(swap_info)}")
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = \
         full_evaluation(neighbor)
@@ -1539,9 +1566,8 @@ for it in range(N_ILS4_ITER):
             f"[LS4 Iter {it}] {'GLOBAL' if improved_global else 'LOCAL'} "
             f"score improved: {neigh_score:.4f}"
         )
-        print(f"   ↪ swap p{swap_info['pidA']} ↔ p{swap_info['pidB']} "
-              f"(day={swap_info['day']} shift={swap_info['shift']}) "
-              f"rooms {swap_info['roomA_before']} ↔ {swap_info['roomB_before']}")
+        print(f"   ↪ swap {format_cross_room_swap_info(swap_info)}")
+        
 
 print("\n========== END OF LS Move #4 ==========\n")
 
@@ -1560,13 +1586,13 @@ def shake_with_vns(current_assignments, current_enriched, k):
             df_rooms,
             df_surgeons,
             C_PER_SHIFT,
-            max_swap_out=1,
-            max_swap_in=1,
+            max_swap_out=4,
+            max_swap_in=4,
         )
         return (
             neigh,
             current_enriched,
-            f"[ILS5 k=1] Agitação N1 swap curto: removed={ids_out} added={ids_in}",
+            f"[ILS5 k=1] N1 : rem={ids_out} add={ids_in}",
             "assignments",
         )
 
@@ -1577,8 +1603,8 @@ def shake_with_vns(current_assignments, current_enriched, k):
             df_rooms,
             df_surgeons,
             C_PER_SHIFT,
-            max_swap_out=2,
-            max_swap_in=2,
+            max_swap_out=7,
+            max_swap_in=7,
         )
         return (
             neigh,
@@ -1614,12 +1640,7 @@ def shake_with_vns(current_assignments, current_enriched, k):
             "assignments",
         )
 
-    desc = (
-        f"[ILS5 k=4] Agitação N4 cross-room: "
-        f"p{swap_info['pidA']}@room{swap_info['roomA_before']} ↔ "
-        f"p{swap_info['pidB']}@room{swap_info['roomB_before']} "
-        f"(day={swap_info['day']}, shift={swap_info['shift']})"
-    )
+    desc = f"[ILS5 k=4] Agitação N4 cross-room: {format_cross_room_swap_info(swap_info)}"
     return neigh_cross, current_enriched, desc, "assignments"
 
 
@@ -1677,7 +1698,7 @@ for it in range(MAX_ILS5_ITER):
             best_feas_vns = neigh_feas
 
         print(
-            f"[ILS5 Iter {it:02d}] {best_suffix} improvement: "
+            f"[ILS5 It {it:02d}] {best_suffix} improvement: "
             f"current={current_score:.4f} | best {best_before:.4f}→{best_score:.4f}"
         )
         k = 1
@@ -1686,8 +1707,10 @@ for it in range(MAX_ILS5_ITER):
         k = k + 1 if k < K_MAX else 1
         no_improve += 1
         print(
-            f"[ILS5 Iter {it:02d}] sem melhoria (score vizinho {neigh_score:.4f}); "
-            f"próxima vizinhança k={k} | sem melhoria há {no_improve} iterações"
+            f"[ILS5 {it:02d}] sem melhoria (score= {neigh_score:.4f}); "
+            
+            f"------------------------------------------------------------------------------"
+           # f"| sem melhoria há {no_improve} iterações"
         )
 
     if no_improve >= MAX_NO_IMPROVE:
