@@ -10,8 +10,9 @@ import re
 import ast
 import itertools
 import pandas as pd
-import random
+import random 
 import numpy as np
+
 
 # Fix seeds
 random.seed(42)
@@ -21,15 +22,18 @@ np.random.seed(42)
 # ------------------------------
 # PARAMETERS
 # ------------------------------
+
+
 DATA_FILE = "Instance_C2_30.dat"
+
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
 
-ALPHA1 = 0.25 # priority
-ALPHA2 = 0.25  # waited days
-ALPHA3 = 0.25 # deadline closeness
-ALPHA4 = 0.25 # feasible blocks
+ALPHA1 = 0.70 # priority
+ALPHA2 = 0.10  # waited days
+ALPHA3 = 0.05 # deadline closeness
+ALPHA4 = 0.05 # feasible blocks
 
 ALPHA5 = 1/3
 ALPHA6 = 1/3
@@ -463,6 +467,9 @@ def generate_neighbor_swap(current_assignments,         #Swap com remoção/admi
 
     return assignments, ids_out, ids_in_effective
 
+
+
+import random
 
 
 def generate_neighbor_add_only(current_assignments,
@@ -1170,25 +1177,12 @@ initial_eval = evaluate_schedule(
 
     
 # =========================================================
-#        FIRST ITERATED LOCAL SEARCH — ADAPTIVE PERTURBATION
+#        FISRT ITERATED LOCAL SEARCH 
 # =========================================================
 
-# mais iterações para dar tempo à perturbação de atuar
-N_ILS_ITER = 300  
-
-# limites para o tamanho do swap (nº de pacientes removidos/adicionados)
-MIN_SWAP_OUT = 2
-MIN_SWAP_IN  = 2
-MAX_SWAP_OUT_LIMIT = 6   # força máxima da perturbação (podes afinar)
-MAX_SWAP_IN_LIMIT  = 6
-
-# valores correntes da perturbação (começam no mínimo)
-cur_swap_out = MIN_SWAP_OUT
-cur_swap_in  = MIN_SWAP_IN
-
-# contagem de iterações sem melhoria
-NO_IMPROV_LIMIT = 5   # depois de 5 iterações sem melhorar → aumentar perturbação
-no_improv = 0         # começa a 0
+N_ILS_ITER = 100
+MAX_SWAP_OUT = 2
+MAX_SWAP_IN  = 2
 
 # 1) SOLUÇÃO CORRENTE = SOLUÇÃO INICIAL (DEPOIS DO HEURÍSTICO)
 current_assignments = df_assignments.copy()
@@ -1211,7 +1205,7 @@ def full_evaluation(assignments):
         ROOM_CHANGE_TIME=ROOM_CHANGE_TIME
     )
 
-    seq = enriched[enriched["scheduled_by_seq"] == 1].copy()
+    seq = enriched[enriched["scheduled_by_seq"]==1].copy()
 
     # 3) Recalcular rooms_free
     rooms_free = build_room_free_from_assignments(seq, df_rooms, C_PER_SHIFT)
@@ -1235,6 +1229,141 @@ def full_evaluation(assignments):
 
     return ev["score"], seq, rooms_free, feas, enriched
 
+# ------------------------------------------------------------
+# VNS SUPPORT (evaluation + VND + General VNS orchestrator)
+# ------------------------------------------------------------
+
+def _evaluate_assignments(assignments):
+    score, seq, rooms_free, feas, enriched = full_evaluation(assignments)
+    return {
+        "assignments": assignments,
+        "score": score,
+        "seq": seq,
+        "rooms_free": rooms_free,
+        "feas": feas,
+        "enriched": enriched,
+    }
+
+
+def _run_vnd(start_assignments, neighborhoods, trials_per_neighborhood=5):
+    current = _evaluate_assignments(start_assignments)
+    l = 0
+
+    while l < len(neighborhoods):
+        name, generator = neighborhoods[l]
+        improved = False
+        best_local = current
+
+        for _ in range(trials_per_neighborhood):
+            neighbor = generator(current["assignments"])
+            if neighbor is None:
+                continue
+
+            neigh_eval = _evaluate_assignments(neighbor)
+            if neigh_eval["score"] > best_local["score"]:
+                best_local = neigh_eval
+                improved = True
+
+        if improved:
+            current = best_local
+            l = 0
+        else:
+            l += 1
+
+    return current
+
+
+def run_general_vns(start_assignments,
+                    shaking_neighborhoods,
+                    vnd_neighborhoods,
+                    rvns_samples_per_neighborhood=3,
+                    trials_per_neighborhood=5,
+                    max_no_improve=15):
+    """General VNS with RVNS seeding + VND local search."""
+
+    # 1) RVNS seeding
+    best = _evaluate_assignments(start_assignments)
+
+    for name, generator in shaking_neighborhoods:
+        for _ in range(rvns_samples_per_neighborhood):
+            neighbor = generator(start_assignments)
+            if neighbor is None:
+                continue
+
+            neigh_eval = _evaluate_assignments(neighbor)
+            if neigh_eval["score"] > best["score"]:
+                best = neigh_eval
+
+    incumbent = best
+    k = 0
+    no_improve = 0
+
+    # 2) Main VNS loop
+    while k < len(shaking_neighborhoods) and no_improve < max_no_improve:
+        name, generator = shaking_neighborhoods[k]
+        shaken = generator(incumbent["assignments"])
+
+        if shaken is None:
+            k += 1
+            no_improve += 1
+            continue
+
+        shaken_vnd = _run_vnd(
+            shaken,
+            vnd_neighborhoods,
+            trials_per_neighborhood=trials_per_neighborhood,
+        )
+
+        if shaken_vnd["score"] > incumbent["score"]:
+            incumbent = shaken_vnd
+            if shaken_vnd["score"] > best["score"]:
+                best = shaken_vnd
+
+            k = 0
+            no_improve = 0
+            print(f"[VNS] Improved to {incumbent['score']:.4f} via {name}; restart k=1")
+        else:
+            k += 1
+            no_improve += 1
+
+    return best
+
+
+# Wrappers to plug existing neighborhood generators into VNS
+def _shake_swap(assignments):
+    neighbor, _, _ = generate_neighbor_swap(
+        assignments,
+        df_patients,
+        df_rooms,
+        df_surgeons,
+        C_PER_SHIFT,
+        max_swap_out=MAX_SWAP_OUT,
+        max_swap_in=MAX_SWAP_IN,
+    )
+    return neighbor
+
+
+def _shake_add_only(assignments):
+    neighbor, added = generate_neighbor_add_only(
+        assignments,
+        df_patients,
+        df_rooms,
+        df_surgeons,
+        C_PER_SHIFT,
+        max_add=2,
+    )
+    if not added:
+        return None
+    return neighbor
+
+
+def _shake_cross_room(assignments):
+    neighbor, info = generate_neighbor_cross_room_swap(assignments)
+    if info is None:
+        return None
+    return neighbor
+
+
 
 # Avaliar solução inicial
 current_score, current_seq, current_rooms_free, current_feas, _ = full_evaluation(current_assignments)
@@ -1250,117 +1379,43 @@ print("Initial score:", current_score)
 
 for it in range(N_ILS_ITER):
 
-    # Gerar vizinho (swap i↔j) com a força ATUAL da perturbação
+    # Gerar vizinho (swap i↔j)
     neighbor, ids_out, ids_in = generate_neighbor_swap(
         current_assignments,
         df_patients,
         df_rooms,
         df_surgeons,
         C_PER_SHIFT,
-        max_swap_out=cur_swap_out,
-        max_swap_in=cur_swap_in
+        max_swap_out=MAX_SWAP_OUT,
+        max_swap_in=MAX_SWAP_IN
     )
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
 
-    # --- ACEITAÇÃO: só se melhorar (hill-climbing) ---
+    # Aceitar se SCORE melhorar
     if neigh_score > current_score:
-        # aceitamos o vizinho como solução corrente
         current_assignments = neighbor.copy()
         current_score = neigh_score
 
-        # reset ao contador de estagnação
-        no_improv = 0
-
-        # se for melhor que o best global → atualiza best
+        # Atualizar melhor global
         if neigh_score > best_score:
             best_score = neigh_score
             best_assignments = neighbor.copy()
             best_seq = neigh_seq.copy()
             best_rooms_free = neigh_rooms_free.copy()
-            best_feas = neigh_feas
+            best_feas = neigh_feas 
 
-<<<<<<< HEAD:first DR/Scenario 2 - all moves - adaptative - Cópia.py
-=======
-<<<<<<< HEAD:first DR/Scenario 2 - all moves - adaptative - Cópia.py
->>>>>>> abdb32f7e57670893642fd9147d0116d98b6f4d7:first DR/Scenario 2 - all moves - adaptative w annealing.py
-        # sempre que há melhoria, voltamos à perturbação "fraca"
-        cur_swap_out = MIN_SWAP_OUT
-        cur_swap_in  = MIN_SWAP_IN
-
-        print(
-            #f"[ILS1 Iter {it}] IMPROVED to {current_score:.4f} | "
-            f"IMPROVED to {current_score:.4f} | "
-            #f"removed={ids_out} | added={ids_in} | "
-            #f"swap_out={cur_swap_out}, swap_in={cur_swap_in}"
-        )
-<<<<<<< HEAD:first DR/Scenario 2 - all moves - adaptative - Cópia.py
-=======
-=======
-            # sempre que há melhoria, voltamos à perturbação "fraca"
-            cur_swap_out = MIN_SWAP_OUT
-            cur_swap_in  = MIN_SWAP_IN
-            
-            print(
-                f"[ILS1 Iter {it}] IMPROVED to {current_score:.4f} | "
-                f"removed={ids_out} | added={ids_in} | "
-                f"swap_out={cur_swap_out}, swap_in={cur_swap_in}"
-            )
-        else:
-            # aceitação por diversificação (piora controlada)
-            no_improv += 1
-            print(
-                f"[ILS1 Iter {it}] ACCEPTED WORSE ({current_score:.4f}) with Δ={delta:.4f} | "
-                f"temp={cur_temp:.4f} | removed={ids_out} | added={ids_in}"
-            )
->>>>>>> 98f3031dc851256101541e863a25fa55b475ca67:first DR/Scenario 2 - all moves - adaptative w annealing.py
->>>>>>> abdb32f7e57670893642fd9147d0116d98b6f4d7:first DR/Scenario 2 - all moves - adaptative w annealing.py
-
+        print(f"[Iter {it}] Improved score to {current_score:.4f} | "
+              f"removed={ids_out} | added={ids_in}")
     else:
-        # não houve melhoria
-        no_improv += 1
-
-        # se já estamos há muito tempo sem melhorar → aumentar força da perturbação
-        if no_improv >= NO_IMPROV_LIMIT:
-            old_out, old_in = cur_swap_out, cur_swap_in
-
-            cur_swap_out = min(cur_swap_out + 1, MAX_SWAP_OUT_LIMIT)
-            cur_swap_in  = min(cur_swap_in  + 1, MAX_SWAP_IN_LIMIT)
-
-            no_improv = 0  # reset ao contador
-
-<<<<<<< HEAD:first DR/Scenario 2 - all moves - adaptative - Cópia.py
-=======
-<<<<<<< HEAD:first DR/Scenario 2 - all moves - adaptative - Cópia.py
->>>>>>> abdb32f7e57670893642fd9147d0116d98b6f4d7:first DR/Scenario 2 - all moves - adaptative w annealing.py
-            print(
-                #f"[ILS1 Iter {it}] NO IMPROVEMENT for {NO_IMPROV_LIMIT} iters → "
-                f"  {neigh_score} "
-                #f"increasing perturbation: "
-                #f"swap_out {old_out}→{cur_swap_out}, "
-                #f"swap_in {old_in}→{cur_swap_in}"
-            )
-<<<<<<< HEAD:first DR/Scenario 2 - all moves - adaptative - Cópia.py
-=======
-=======
-        print(
-            f"[ILS1 Iter {it}] NO IMPROVEMENT for {NO_IMPROV_LIMIT} iters → "
-            f"increasing perturbation: "
-            f"swap_out {old_out}→{cur_swap_out}, "
-            f"swap_in {old_in}→{cur_swap_in}"
-        )
-
-    # arrefecimento da temperatura (não deixar chegar a zero)
-    cur_temp = max(cur_temp * ACCEPT_TEMP_DECAY, ACCEPT_TEMP_MIN)
->>>>>>> 98f3031dc851256101541e863a25fa55b475ca67:first DR/Scenario 2 - all moves - adaptative w annealing.py
->>>>>>> abdb32f7e57670893642fd9147d0116d98b6f4d7:first DR/Scenario 2 - all moves - adaptative w annealing.py
-     
+       None
+       
        
 # ============================================================
 #     ILS #2 — ADD-ONLY (INSERIR SEM REMOVER)
 # ============================================================
 
-#print("\n\n========== STARTING ILS #2 — ADD-ONLY ==========\n")
+print("\n\n========== STARTING ILS #2 — ADD-ONLY ==========\n")
 
 current_assignments = best_assignments.copy()
 current_score, current_seq, current_rooms_free, current_feas, _ = \
@@ -1374,7 +1429,7 @@ best_feas = current_feas
 
 N_ILS2_ITER = 50
 
-#print("Initial add-only score:", current_score)
+print("Initial add-only score:", current_score)
 
 for it in range(N_ILS2_ITER):
 
@@ -1405,9 +1460,8 @@ for it in range(N_ILS2_ITER):
             best_feas = neigh_feas
 
         print(
-            #f"[ILS2 Iter {it}] Improved score to {current_score:.4f} | "
-            f" {current_score:.4f} | "
-            #f"added={ids_added}"
+            f"[ILS2 Iter {it}] Improved score to {current_score:.4f} | "
+            f"added={ids_added}"
         )
 
        
@@ -1596,14 +1650,9 @@ for it in range(N_ILS4_ITER):
             f"[ILS4 Iter {it}] {'GLOBAL' if improved_global else 'LOCAL'} "
             f"score improved: {neigh_score:.4f}"
         )
-        print(
-            f"   ↪ day={swap_info['day']}, shift={swap_info['shift']}, "
-            f"room {swap_info['roomA']} → {swap_info['roomB']}: "
-            f"patients {swap_info['from_roomA_to_roomB']} ; "
-            f"room {swap_info['roomB']} → {swap_info['roomA']}: "
-            f"patients {swap_info['from_roomB_to_roomA']}"
-        )
-
+        print(f"   ↪ swap p{swap_info['pidA']} ↔ p{swap_info['pidB']} "
+              f"(day={swap_info['day']} shift={swap_info['shift']}) "
+              f"rooms {swap_info['roomA_before']} ↔ {swap_info['roomB_before']}")
 
 print("\n========== END OF ILS #4 ==========\n")
 
@@ -1642,7 +1691,64 @@ df_room_free = best_rooms_free.copy()
 df_surgeon_free = best_surgeon_free.copy()
 
 
+# =========================================================
+#        GENERAL VNS ON TOP OF ILS SOLUTION
+# =========================================================
 
+print("\n\n========== STARTING GENERAL VNS (Scenario 2 - all moves) ==========\n")
+
+shaking_neighborhoods = [
+    ("swap", _shake_swap),
+    ("add_only", _shake_add_only),
+    ("cross_room", _shake_cross_room),
+]
+
+vnd_neighborhoods = [
+    ("swap", _shake_swap),
+    ("add_only", _shake_add_only),
+    ("cross_room", _shake_cross_room),
+]
+
+vns_result = run_general_vns(
+    start_assignments=best_assignments,
+    shaking_neighborhoods=shaking_neighborhoods,
+    vnd_neighborhoods=vnd_neighborhoods,
+    rvns_samples_per_neighborhood=2,
+    trials_per_neighborhood=3,
+    max_no_improve=15,
+)
+
+if vns_result["score"] > best_score:
+    print(
+        f"[VNS] Improved global score from {best_score:.4f} to "
+        f"{vns_result['score']:.4f}"
+    )
+
+    best_score = vns_result["score"]
+    best_assignments = vns_result["assignments"].copy()
+    best_assignments_enriched = vns_result["enriched"].copy()
+    best_assignments_seq = vns_result["seq"].copy()
+    best_rooms_free = vns_result["rooms_free"].copy()
+    best_feas = vns_result["feas"]
+    best_surgeon_free = build_surgeon_free_from_assignments(
+        assignments=best_assignments_seq,
+        df_surgeons=df_surgeons,
+        C_PER_SHIFT=C_PER_SHIFT,
+    )
+
+    assignments_enriched = best_assignments_enriched.copy()
+    assignments_seq_view = best_assignments_seq.copy()
+    df_room_free = best_rooms_free.copy()
+    df_surgeon_free = best_surgeon_free.copy()
+else:
+    print(
+        f"[VNS] No improvement over ILS best (score {best_score:.4f}). "
+        "Keeping ILS solution."
+    )
+
+
+
+# --------------------------------------------
 
 
 
@@ -1830,7 +1936,7 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
 
 # ---------- 8) TEXT-BASED SCHEDULE (formato tipo imagem) ----------
 
-"""print("\n==================== FINAL SCHEDULE ====================\n")
+print("\n==================== FINAL SCHEDULE ====================\n")
 
 if len(assignments_seq_view) == 0:
     print("(No assignments found — nothing to display.)")
@@ -1892,4 +1998,3 @@ best_eval = evaluate_schedule(
     excess_block_min=best_feas["excess_block_min"]
 )
 
-"""

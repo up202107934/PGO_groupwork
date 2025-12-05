@@ -1190,6 +1190,7 @@ cur_swap_in  = MIN_SWAP_IN
 NO_IMPROV_LIMIT = 5   # depois de 5 iterações sem melhorar → aumentar perturbação
 no_improv = 0         # começa a 0
 
+<<<<<<< HEAD
 # parâmetros de aceitação (simulated annealing light)
 ACCEPT_TEMP_START = 0.02  # temperatura inicial (controla a probabilidade de aceitar piores)
 ACCEPT_TEMP_DECAY = 0.99 # fator de decaimento por iteração
@@ -1198,6 +1199,8 @@ cur_temp = ACCEPT_TEMP_START
 
 
 
+=======
+>>>>>>> abdb32f7e57670893642fd9147d0116d98b6f4d7
 # 1) SOLUÇÃO CORRENTE = SOLUÇÃO INICIAL (DEPOIS DO HEURÍSTICO)
 current_assignments = df_assignments.copy()
 
@@ -1271,6 +1274,7 @@ for it in range(N_ILS_ITER):
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
 
+<<<<<<< HEAD
     delta = neigh_score - current_score
     delta_best = neigh_score - best_score 
 
@@ -1285,6 +1289,16 @@ for it in range(N_ILS_ITER):
         if delta_best > 0:
             # reset ao contador de estagnação
             no_improv = 0
+=======
+    # --- ACEITAÇÃO: só se melhorar (hill-climbing) ---
+    if neigh_score > current_score:
+        # aceitamos o vizinho como solução corrente
+        current_assignments = neighbor.copy()
+        current_score = neigh_score
+
+        # reset ao contador de estagnação
+        no_improv = 0
+>>>>>>> abdb32f7e57670893642fd9147d0116d98b6f4d7
 
         # se for melhor que o best global → atualiza best
             if neigh_score > best_score:

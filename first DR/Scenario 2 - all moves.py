@@ -10,13 +10,18 @@ import re
 import ast
 import itertools
 import pandas as pd
+import random
+import numpy as np
 
+# Fix seeds
+random.seed(42)
+np.random.seed(42)
 # ------------------------------
 # PARAMETERS
 # ------------------------------
 
 
-DATA_FILE = "Instance_NC_30.dat"
+DATA_FILE = "Instance_C1_30.dat"
 
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)

@@ -16,20 +16,21 @@ import numpy as np
 # Fix seeds
 random.seed(42)
 np.random.seed(42)
-
-
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "Instance_C2_30.dat"
+
+
+DATA_FILE = "Instance_C1_30.dat"
+
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
 
-ALPHA1 = 0.25 # priority
-ALPHA2 = 0.25  # waited days
-ALPHA3 = 0.25 # deadline closeness
-ALPHA4 = 0.25 # feasible blocks
+ALPHA1 = 0.70 # priority
+ALPHA2 = 0.10  # waited days
+ALPHA3 = 0.05 # deadline closeness
+ALPHA4 = 0.05 # feasible blocks
 
 ALPHA5 = 1/3
 ALPHA6 = 1/3
@@ -463,6 +464,9 @@ def generate_neighbor_swap(current_assignments,         #Swap com remoção/admi
 
     return assignments, ids_out, ids_in_effective
 
+
+
+import random
 
 
 def generate_neighbor_add_only(current_assignments,
@@ -952,6 +956,38 @@ def generate_neighbor_cross_room_swap(current_assignments):
     return neighbor, swap_info
 
 
+def format_cross_room_swap_info(swap_info):
+    """Format cross-room swap details without assuming specific keys.
+
+    Supports both the current swap_info structure (roomA/roomB and
+    from_roomA_to_roomB/from_roomB_to_roomA) and older variants that used
+    roomA_before/roomB_before with pidA/pidB. Missing pieces fall back to
+    '?', preventing KeyErrors in print statements.
+    """
+
+    def _normalize_patients(value):
+        if value is None:
+            return "?"
+        if isinstance(value, list):
+            return value
+        return [value]
+
+    roomA = swap_info.get("roomA", swap_info.get("roomA_before", "?"))
+    roomB = swap_info.get("roomB", swap_info.get("roomB_before", "?"))
+    patients_a = _normalize_patients(
+        swap_info.get("from_roomA_to_roomB", swap_info.get("pidA"))
+    )
+    patients_b = _normalize_patients(
+        swap_info.get("from_roomB_to_roomA", swap_info.get("pidB"))
+    )
+    day = swap_info.get("day", "?")
+    shift = swap_info.get("shift", "?")
+
+    return (
+        f"room{roomA}→room{roomB} p{patients_a} | "
+        f"room{roomB}→room{roomA} p{patients_b} "
+        f"(day={day}, shift={shift})"
+    )
 
 # ------------------------------
 # INITIAL PLANNING STATE
@@ -1170,25 +1206,12 @@ initial_eval = evaluate_schedule(
 
     
 # =========================================================
-#        FIRST ITERATED LOCAL SEARCH — ADAPTIVE PERTURBATION
+#        FISRT LOCAL SEARCH 
 # =========================================================
 
-# mais iterações para dar tempo à perturbação de atuar
-N_ILS_ITER = 300  
-
-# limites para o tamanho do swap (nº de pacientes removidos/adicionados)
-MIN_SWAP_OUT = 2
-MIN_SWAP_IN  = 2
-MAX_SWAP_OUT_LIMIT = 6   # força máxima da perturbação (podes afinar)
-MAX_SWAP_IN_LIMIT  = 6
-
-# valores correntes da perturbação (começam no mínimo)
-cur_swap_out = MIN_SWAP_OUT
-cur_swap_in  = MIN_SWAP_IN
-
-# contagem de iterações sem melhoria
-NO_IMPROV_LIMIT = 5   # depois de 5 iterações sem melhorar → aumentar perturbação
-no_improv = 0         # começa a 0
+N_ILS_ITER = 100
+MAX_SWAP_OUT = 2
+MAX_SWAP_IN  = 2
 
 # 1) SOLUÇÃO CORRENTE = SOLUÇÃO INICIAL (DEPOIS DO HEURÍSTICO)
 current_assignments = df_assignments.copy()
@@ -1211,7 +1234,7 @@ def full_evaluation(assignments):
         ROOM_CHANGE_TIME=ROOM_CHANGE_TIME
     )
 
-    seq = enriched[enriched["scheduled_by_seq"] == 1].copy()
+    seq = enriched[enriched["scheduled_by_seq"]==1].copy()
 
     # 3) Recalcular rooms_free
     rooms_free = build_room_free_from_assignments(seq, df_rooms, C_PER_SHIFT)
@@ -1235,6 +1258,154 @@ def full_evaluation(assignments):
 
     return ev["score"], seq, rooms_free, feas, enriched
 
+def run_full_local_search_pipeline(start_assignments):
+    """Run the four local-search moves starting from ``start_assignments``.
+
+    Returns the best assignments and full evaluation tuple produced by the
+    pipeline (score, seq, rooms_free, feas, enriched).
+    """
+
+    # ---------- LS1: swap (remove/add) ----------
+    current_assignments = start_assignments.copy()
+    current_score, current_seq, current_rooms_free, current_feas, _ = full_evaluation(current_assignments)
+
+    best_score = current_score
+    best_assignments = current_assignments.copy()
+
+    N_ILS_ITER = 100
+    MAX_SWAP_OUT = 2
+    MAX_SWAP_IN = 2
+
+    for _ in range(N_ILS_ITER):
+        neighbor, _, _ = generate_neighbor_swap(
+            current_assignments,
+            df_patients,
+            df_rooms,
+            df_surgeons,
+            C_PER_SHIFT,
+            max_swap_out=MAX_SWAP_OUT,
+            max_swap_in=MAX_SWAP_IN,
+        )
+
+        neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
+
+        if neigh_score > current_score:
+            current_assignments = neighbor.copy()
+            current_score = neigh_score
+
+            if neigh_score > best_score:
+                best_score = neigh_score
+                best_assignments = neighbor.copy()
+
+    # ---------- LS2: add-only ----------
+    current_assignments = best_assignments.copy()
+    current_score, current_seq, current_rooms_free, current_feas, _ = full_evaluation(current_assignments)
+
+    best_score = current_score
+    best_assignments = current_assignments.copy()
+
+    N_ILS2_ITER = 50
+
+    for _ in range(N_ILS2_ITER):
+        neighbor, ids_added = generate_neighbor_add_only(
+            current_assignments,
+            df_patients,
+            df_rooms,
+            df_surgeons,
+            C_PER_SHIFT,
+            max_add=2,
+        )
+
+        if not ids_added:
+            continue
+
+        neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
+
+        if neigh_score > current_score:
+            current_assignments = neighbor.copy()
+            current_score = neigh_score
+
+            if neigh_score > best_score:
+                best_score = neigh_score
+                best_assignments = neighbor.copy()
+
+    # ---------- Prepare enriched view (same steps as original pipeline) ----------
+    assignments_enriched = best_assignments.merge(
+        df_patients[["patient_id", "duration", "priority", "waiting"]],
+        on="patient_id",
+        how="left",
+    )
+    assignments_enriched = sequence_global_by_surgeon(
+        assignments_enriched,
+        C_PER_SHIFT=C_PER_SHIFT,
+        CLEANUP=CLEANUP,
+        TOLERANCE=TOLERANCE,
+        ROOM_CHANGE_TIME=ROOM_CHANGE_TIME,
+    )
+
+    # ---------- LS3: resequencing ----------
+    current_enriched = assignments_enriched.copy()
+    current_enriched["order_hint"] = current_enriched["seq_in_block"]
+
+    current_score, current_seq, current_rooms_free, current_feas, _ = full_evaluation_from_enriched(
+        current_enriched
+    )
+
+    best_score = current_score
+    best_enriched = current_enriched.copy()
+
+    N_ILS3_ITER = 30
+
+    for _ in range(N_ILS3_ITER):
+        neighbor_enriched, _ = generate_neighbor_resequence(
+            current_enriched,
+            max_blocks_to_change=1,
+            swaps_per_block=1,
+        )
+
+        neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation_from_enriched(
+            neighbor_enriched
+        )
+
+        if neigh_score > current_score:
+            current_enriched = neighbor_enriched.copy()
+            current_score = neigh_score
+
+            if neigh_score > best_score:
+                best_score = neigh_score
+                best_enriched = neighbor_enriched.copy()
+
+    # ---------- LS4: cross-room swap ----------
+    current_assignments = best_assignments.copy()
+    current_score, current_seq, current_rooms_free, current_feas, _ = full_evaluation(current_assignments)
+
+    best_score = current_score
+    best_assignments_4 = current_assignments.copy()
+
+    N_ILS4_ITER = 50
+
+    for _ in range(N_ILS4_ITER):
+        neighbor, swap_info = generate_neighbor_cross_room_swap(current_assignments)
+
+        if swap_info is None:
+            continue
+
+        neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
+
+        if neigh_score > current_score:
+            current_assignments = neighbor.copy()
+            current_score = neigh_score
+
+            if neigh_score > best_score:
+                best_score = neigh_score
+                best_assignments_4 = neighbor.copy()
+
+    # ---------- Final evaluation of the best solution ----------
+    final_score, final_seq, final_rooms_free, final_feas, final_enriched = full_evaluation(
+        best_assignments_4
+    )
+
+    return best_assignments_4, final_enriched, final_seq, final_rooms_free, final_feas, final_score
 
 # Avaliar solução inicial
 current_score, current_seq, current_rooms_free, current_feas, _ = full_evaluation(current_assignments)
@@ -1245,122 +1416,58 @@ best_seq = current_seq.copy()
 best_rooms_free = current_rooms_free.copy()
 best_feas = current_feas  
 
-print("\nILS START")
-print("Initial score:", current_score)
+print("\n========== LOCAL SEARCH MOVE #1 — SWAP ==========")
+print("Initial score (LS1):", current_score)
 
 for it in range(N_ILS_ITER):
 
-    # Gerar vizinho (swap i↔j) com a força ATUAL da perturbação
+    # Gerar vizinho (swap i↔j)
     neighbor, ids_out, ids_in = generate_neighbor_swap(
         current_assignments,
         df_patients,
         df_rooms,
         df_surgeons,
         C_PER_SHIFT,
-        max_swap_out=cur_swap_out,
-        max_swap_in=cur_swap_in
+        max_swap_out=MAX_SWAP_OUT,
+        max_swap_in=MAX_SWAP_IN
     )
+    
+    """print(
+        f"[LS1 It{it}] rem={ids_out} | add={ids_in} "
+        
+        f"| total_assignments={len(neighbor)}" 
+        
+    )"""
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
 
-    # --- ACEITAÇÃO: só se melhorar (hill-climbing) ---
+    # Aceitar se SCORE melhorar
     if neigh_score > current_score:
-        # aceitamos o vizinho como solução corrente
         current_assignments = neighbor.copy()
         current_score = neigh_score
 
-        # reset ao contador de estagnação
-        no_improv = 0
-
-        # se for melhor que o best global → atualiza best
+        # Atualizar melhor global
         if neigh_score > best_score:
             best_score = neigh_score
             best_assignments = neighbor.copy()
             best_seq = neigh_seq.copy()
             best_rooms_free = neigh_rooms_free.copy()
-            best_feas = neigh_feas
-
-<<<<<<< HEAD:first DR/Scenario 2 - all moves - adaptative - Cópia.py
-=======
-<<<<<<< HEAD:first DR/Scenario 2 - all moves - adaptative - Cópia.py
->>>>>>> abdb32f7e57670893642fd9147d0116d98b6f4d7:first DR/Scenario 2 - all moves - adaptative w annealing.py
-        # sempre que há melhoria, voltamos à perturbação "fraca"
-        cur_swap_out = MIN_SWAP_OUT
-        cur_swap_in  = MIN_SWAP_IN
+            best_feas = neigh_feas 
 
         print(
-            #f"[ILS1 Iter {it}] IMPROVED to {current_score:.4f} | "
-            f"IMPROVED to {current_score:.4f} | "
-            #f"removed={ids_out} | added={ids_in} | "
-            #f"swap_out={cur_swap_out}, swap_in={cur_swap_in}"
+            f"[LS1 Iter {it}] Accepted improvement → {current_score:.4f} "
+            f"| removed={ids_out} | added={ids_in}"
         )
-<<<<<<< HEAD:first DR/Scenario 2 - all moves - adaptative - Cópia.py
-=======
-=======
-            # sempre que há melhoria, voltamos à perturbação "fraca"
-            cur_swap_out = MIN_SWAP_OUT
-            cur_swap_in  = MIN_SWAP_IN
-            
-            print(
-                f"[ILS1 Iter {it}] IMPROVED to {current_score:.4f} | "
-                f"removed={ids_out} | added={ids_in} | "
-                f"swap_out={cur_swap_out}, swap_in={cur_swap_in}"
-            )
-        else:
-            # aceitação por diversificação (piora controlada)
-            no_improv += 1
-            print(
-                f"[ILS1 Iter {it}] ACCEPTED WORSE ({current_score:.4f}) with Δ={delta:.4f} | "
-                f"temp={cur_temp:.4f} | removed={ids_out} | added={ids_in}"
-            )
->>>>>>> 98f3031dc851256101541e863a25fa55b475ca67:first DR/Scenario 2 - all moves - adaptative w annealing.py
->>>>>>> abdb32f7e57670893642fd9147d0116d98b6f4d7:first DR/Scenario 2 - all moves - adaptative w annealing.py
-
     else:
-        # não houve melhoria
-        no_improv += 1
-
-        # se já estamos há muito tempo sem melhorar → aumentar força da perturbação
-        if no_improv >= NO_IMPROV_LIMIT:
-            old_out, old_in = cur_swap_out, cur_swap_in
-
-            cur_swap_out = min(cur_swap_out + 1, MAX_SWAP_OUT_LIMIT)
-            cur_swap_in  = min(cur_swap_in  + 1, MAX_SWAP_IN_LIMIT)
-
-            no_improv = 0  # reset ao contador
-
-<<<<<<< HEAD:first DR/Scenario 2 - all moves - adaptative - Cópia.py
-=======
-<<<<<<< HEAD:first DR/Scenario 2 - all moves - adaptative - Cópia.py
->>>>>>> abdb32f7e57670893642fd9147d0116d98b6f4d7:first DR/Scenario 2 - all moves - adaptative w annealing.py
-            print(
-                #f"[ILS1 Iter {it}] NO IMPROVEMENT for {NO_IMPROV_LIMIT} iters → "
-                f"  {neigh_score} "
-                #f"increasing perturbation: "
-                #f"swap_out {old_out}→{cur_swap_out}, "
-                #f"swap_in {old_in}→{cur_swap_in}"
-            )
-<<<<<<< HEAD:first DR/Scenario 2 - all moves - adaptative - Cópia.py
-=======
-=======
-        print(
-            f"[ILS1 Iter {it}] NO IMPROVEMENT for {NO_IMPROV_LIMIT} iters → "
-            f"increasing perturbation: "
-            f"swap_out {old_out}→{cur_swap_out}, "
-            f"swap_in {old_in}→{cur_swap_in}"
-        )
-
-    # arrefecimento da temperatura (não deixar chegar a zero)
-    cur_temp = max(cur_temp * ACCEPT_TEMP_DECAY, ACCEPT_TEMP_MIN)
->>>>>>> 98f3031dc851256101541e863a25fa55b475ca67:first DR/Scenario 2 - all moves - adaptative w annealing.py
->>>>>>> abdb32f7e57670893642fd9147d0116d98b6f4d7:first DR/Scenario 2 - all moves - adaptative w annealing.py
-     
+       None
+       
        
 # ============================================================
-#     ILS #2 — ADD-ONLY (INSERIR SEM REMOVER)
+#      #2 — ADD-ONLY (INSERIR SEM REMOVER)
 # ============================================================
 
-#print("\n\n========== STARTING ILS #2 — ADD-ONLY ==========\n")
+
+print("\n\n========== LOCAL SEARCH MOVE #2 — ADD-ONLY ==========\n")
 
 current_assignments = best_assignments.copy()
 current_score, current_seq, current_rooms_free, current_feas, _ = \
@@ -1374,7 +1481,8 @@ best_feas = current_feas
 
 N_ILS2_ITER = 50
 
-#print("Initial add-only score:", current_score)
+
+print("Initial add-only score (LS2):", current_score)
 
 for it in range(N_ILS2_ITER):
 
@@ -1388,7 +1496,12 @@ for it in range(N_ILS2_ITER):
     )
 
     if not ids_added:
+       
         continue
+    """print(
+        f"[LS2 Iter {it}] Avaliação vizinhança add-only: candidatos_inseridos={ids_added} "
+        f"| total_assignments={len(neighbor)}"
+    )"""
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = \
         full_evaluation(neighbor)
@@ -1405,9 +1518,8 @@ for it in range(N_ILS2_ITER):
             best_feas = neigh_feas
 
         print(
-            #f"[ILS2 Iter {it}] Improved score to {current_score:.4f} | "
-            f" {current_score:.4f} | "
-            #f"added={ids_added}"
+            f"[LS2 Iter {it}] Accepted improvement → {current_score:.4f} | "
+            f"added={ids_added}"
         )
 
        
@@ -1469,7 +1581,7 @@ df_surgeon_free = best_surgeon_free.copy()
 #        ILS #3 — RESEQUENCING (mudar a ordem dentro dos blocos)
 # =========================================================
 
-print("\n\n========== STARTING ILS #2 — RESEQUENCE ==========\n")
+print("\n\n========== STARTING Local search move #3 — RESEQUENCE ==========\n")
 
 # ponto de partida = melhor solução da ILS #2
 current_enriched = assignments_enriched.copy()
@@ -1487,7 +1599,7 @@ best_seq = current_seq.copy()
 best_rooms_free = current_rooms_free.copy()
 best_feas = current_feas  
 
-print("Initial resequence score:", current_score)
+print("Initial resequence score (LS3):", current_score)
 
 N_ILS_ITER = 30  # mesmo número que tinhas
 
@@ -1499,6 +1611,9 @@ for it in range(N_ILS_ITER):
         max_blocks_to_change=1,
         swaps_per_block=1
     )
+    """print(
+        f"[LS3 Iter {it:02d}] Avaliação vizinhança resequence: {len(change_log)} bloco(s) tocados"        
+    )"""
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = \
         full_evaluation_from_enriched(neighbor_enriched)
@@ -1523,7 +1638,7 @@ for it in range(N_ILS_ITER):
         status = "GLOBAL_BEST" if improved_global else "LOCAL_IMPROVEMENT"
 
         print(
-            f"[ILS3 Iter {it:02d}] {status} | "
+            f"[LS3 Iter {it:02d}] {status} | "
             f"current: {old_current:.4f} -> {current_score:.4f} | "
             f"best: {old_best:.4f} -> {best_score:.4f}"
         )
@@ -1541,14 +1656,15 @@ for it in range(N_ILS_ITER):
             )
             print(f"     before: {before_str}")
             print(f"     after : {after_str}")
+            
 
-print("\n========== END OF ILS #3 ==========\n")
+print("\n========== END OF LS Move #3 ==========\n")
 
 # =========================================================
 #        ILS #3 — CROSS-ROOM SWAP (change surgeries from one room to another within the same shift )
 # =========================================================
 
-print("\n\n========== STARTING ILS #4 — CROSS-ROOM SWAP ==========\n")
+print("\n\n========== STARTING LS Move #4 — CROSS-ROOM SWAP ==========\n")
 
 # ponto de partida = melhor solução da ILS2
 current_assignments = best_assignments.copy()
@@ -1564,7 +1680,7 @@ best_rooms_free_4 = current_rooms_free.copy()
 best_feas_4 = current_feas
 
 
-print("Initial score (ILS4):", current_score)
+print("Initial score (LS4):", current_score)
 
 N_ILS4_ITER = 50
 
@@ -1573,7 +1689,9 @@ for it in range(N_ILS4_ITER):
     neighbor, swap_info = generate_neighbor_cross_room_swap(current_assignments)
 
     if swap_info is None:
+        #print(f"[LS4 Iter {it}] Nenhum cross-room swap possível nesta iteração.")
         continue
+    #print(f"[LS4 Iter {it}] Avaliação vizinhança cross-room: {format_cross_room_swap_info(swap_info)}")
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = \
         full_evaluation(neighbor)
@@ -1593,43 +1711,177 @@ for it in range(N_ILS4_ITER):
 
 
         print(
-            f"[ILS4 Iter {it}] {'GLOBAL' if improved_global else 'LOCAL'} "
+            f"[LS4 Iter {it}] {'GLOBAL' if improved_global else 'LOCAL'} "
             f"score improved: {neigh_score:.4f}"
         )
-        print(
-            f"   ↪ day={swap_info['day']}, shift={swap_info['shift']}, "
-            f"room {swap_info['roomA']} → {swap_info['roomB']}: "
-            f"patients {swap_info['from_roomA_to_roomB']} ; "
-            f"room {swap_info['roomB']} → {swap_info['roomA']}: "
-            f"patients {swap_info['from_roomB_to_roomA']}"
+        print(f"   ↪ swap {format_cross_room_swap_info(swap_info)}")
+        
+
+print("\n========== END OF LS Move #4 ==========\n")
+
+# =========================================================
+#        ILS with VNS-style shaking (unified loop)
+# ========================================================
+
+print("\n\n========== STARTING ILS #5 — VNS-STYLE ITERATED LOCAL SEARCH ==========\n")
+
+def shake_with_vns(current_assignments, current_enriched, k):
+    """Return a neighbor + description according to neighborhood k (1..kmax)."""
+    if k == 1:
+        neigh, ids_out, ids_in = generate_neighbor_swap(
+            current_assignments,
+            df_patients,
+            df_rooms,
+            df_surgeons,
+            C_PER_SHIFT,
+            max_swap_out=4,
+            max_swap_in=4,
+        )
+        return (
+            neigh,
+            current_enriched,
+            f"[ILS5 k=1] N1 : rem={ids_out} add={ids_in}",
+            "assignments",
         )
 
+    if k == 2:
+        neigh, ids_out, ids_in = generate_neighbor_swap(
+            current_assignments,
+            df_patients,
+            df_rooms,
+            df_surgeons,
+            C_PER_SHIFT,
+            max_swap_out=7,
+            max_swap_in=7,
+        )
+        return (
+            neigh,
+            current_enriched,
+            f"[ILS5 k=2] Agitação N2 swap longo: removed={ids_out} added={ids_in}",
+            "assignments",
+        )
 
-print("\n========== END OF ILS #4 ==========\n")
+    if k == 3:
+        neigh_enriched, change_log = generate_neighbor_resequence(
+            current_enriched,
+            max_blocks_to_change=2,
+            swaps_per_block=2,
+        )
+        touched = len(change_log)
+        details = [
+            f"(room={c['room']}, day={c['day']}, shift={c['shift']})"
+            for c in change_log
+        ]
+        return (
+            current_assignments,
+            neigh_enriched,
+            f"[ILS5 k=3] Agitação N3 resequence: {touched} blocos {details}",
+            "enriched",
+        )
 
-# atualizar solução final com o melhor da ILS4
-best_assignments = best_assignments_4.copy()
-best_assignments_enriched = best_assignments.merge(
-    df_patients[["patient_id","duration","priority","waiting"]],
-    on="patient_id",
-    how="left"
-)
-best_assignments_enriched = sequence_global_by_surgeon(
-    best_assignments_enriched,
-    C_PER_SHIFT=C_PER_SHIFT,
-    CLEANUP=CLEANUP,
-    TOLERANCE=TOLERANCE,
-    ROOM_CHANGE_TIME=ROOM_CHANGE_TIME
-)
-best_assignments_seq = best_assignments_enriched[
-    best_assignments_enriched["scheduled_by_seq"] == 1
-].sort_values(["day","shift","room","seq_in_block"]).reset_index(drop=True)
+    neigh_cross, swap_info = generate_neighbor_cross_room_swap(current_assignments)
+    if swap_info is None:
+        return (
+            current_assignments,
+            current_enriched,
+            f"[ILS5 k=4] Agitação N4 cross-room: nenhum swap possível",
+            "assignments",
+        )
 
-best_rooms_free = build_room_free_from_assignments(
-    assignments=best_assignments_seq,
-    df_rooms=df_rooms,
-    C_PER_SHIFT=C_PER_SHIFT
-)
+    desc = f"[ILS5 k=4] Agitação N4 cross-room: {format_cross_room_swap_info(swap_info)}"
+    return neigh_cross, current_enriched, desc, "assignments"
+
+
+K_MAX = 4
+MAX_ILS5_ITER = 50
+MAX_NO_IMPROVE = 10
+
+# ponto de partida = melhor solução encontrada até aqui
+current_assignments = best_assignments_4.copy()
+current_score, current_seq, current_rooms_free, current_feas, current_enriched = \
+    full_evaluation(current_assignments)
+
+best_score = current_score
+best_assignments_vns = current_assignments.copy()
+best_enriched_vns = current_enriched.copy()
+best_seq_vns = current_seq.copy()
+best_rooms_free_vns = current_rooms_free.copy()
+best_feas_vns = current_feas
+
+print(f"Initial score (ILS5): {current_score:.4f}")
+
+k = 1
+no_improve = 0
+
+for it in range(MAX_ILS5_ITER):
+    neigh_assign, neigh_enriched, desc, mode = shake_with_vns(
+        current_assignments, current_enriched, k
+    )
+    print(desc)
+
+    if mode == "enriched":
+        neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, neigh_enriched = \
+            full_evaluation_from_enriched(neigh_enriched)
+       
+    else:
+        neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, neigh_enriched = \
+            full_evaluation(neigh_assign)
+
+    # Sempre aplicar a sequência completa de local search ao vizinho gerado
+    ls_start_assignments = neigh_seq[[
+        "patient_id", "room", "day", "shift", "used_min", "surgeon_id", "iteration"
+    ]].copy()
+    (
+        ls_best_assignments,
+        ls_best_enriched,
+        ls_best_seq,
+        ls_best_rooms_free,
+        ls_best_feas,
+        ls_best_score,
+    ) = run_full_local_search_pipeline(ls_start_assignments)
+
+    if ls_best_score > current_score:
+        improved_global = ls_best_score > best_score
+        current_score = ls_best_score
+        current_assignments = ls_best_assignments.copy()
+        current_enriched = ls_best_enriched.copy()
+
+        best_suffix = "GLOBAL" if improved_global else "LOCAL"
+        best_before = best_score
+        if improved_global:
+            best_score = ls_best_score
+            best_assignments_vns = ls_best_assignments.copy()
+            best_enriched_vns = ls_best_enriched.copy()
+            best_seq_vns = ls_best_seq.copy()
+            best_rooms_free_vns = ls_best_rooms_free.copy()
+            best_feas_vns = ls_best_feas
+
+        print(
+            f"[ILS5 It {it:02d}] {best_suffix} improvement (k={k}): "
+            f"current={current_score:.4f} | best {best_before:.4f}→{best_score:.4f}"
+        )
+        k = 1  # Reset a k=1 quando há melhoria (em qualquer vizinhança)
+        no_improve = 0  # Reset do contador de estagnação
+    else:
+        k = k + 1 if k < K_MAX else 1
+        no_improve += 1
+        print(
+            f"[ILS5 {it:02d}] sem melhoria em k={k-1 if k > 1 else K_MAX} (score= {ls_best_score:.4f}); "
+            f"k agora={k} | estagnação há {no_improve} ciclos"
+        )
+
+    if no_improve >= MAX_NO_IMPROVE:
+        print(f"Paragem por estagnação no ILS5 ({no_improve} ciclos sem melhoria).")
+        break
+
+print("\n========== END OF ILS #5 ==========\n")
+
+# atualizar solução final com o melhor da ILS5
+best_assignments = best_assignments_vns.copy()
+best_assignments_enriched = best_enriched_vns.copy()
+best_assignments_seq = best_seq_vns.copy()
+best_rooms_free = best_rooms_free_vns.copy()
+
 best_surgeon_free = build_surgeon_free_from_assignments(
     assignments=best_assignments_seq,
     df_surgeons=df_surgeons,
@@ -1830,7 +2082,7 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
 
 # ---------- 8) TEXT-BASED SCHEDULE (formato tipo imagem) ----------
 
-"""print("\n==================== FINAL SCHEDULE ====================\n")
+print("\n==================== FINAL SCHEDULE ====================\n")
 
 if len(assignments_seq_view) == 0:
     print("(No assignments found — nothing to display.)")
@@ -1892,4 +2144,12 @@ best_eval = evaluate_schedule(
     excess_block_min=best_feas["excess_block_min"]
 )
 
-"""
+# =========================================================
+#        FINAL SUMMARY — MELHOR SOLUÇÃO ENCONTRADA
+# =========================================================
+
+print("\n" + "="*70)
+print(f"Melhor solução encontrada com score: {best_eval['score']:.4f}")
+print("="*70 + "\n")
+
+
