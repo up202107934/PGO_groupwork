@@ -373,6 +373,27 @@ import json  # <-- ADICIONAR AOS IMPORTS
 # ================== SENSITIVITY LOGGING (ANÁLISE DE SENSIBILIDADE) ==================
 EVAL_WEIGHTS = (0.6, 0.1, 0.25, 0.05)  # manter em linha com evaluate_schedule
 improvement_log = []
+iteration_log = []
+
+def log_iteration(fase, iteracao, metrics, accepted):
+    """
+    Regista uma linha por iteração com SÓ os termos do score (contribuições ponderadas).
+    - fase: string (ex: 'ILS1_SWAP', 'ILS2_ADD_ONLY', 'LS3_CROSS_ROOM', 'LS4_RESEQUENCE')
+    - iteracao: int
+    - metrics: resultado de eval_components(...)
+    - accepted: True/False (se o vizinho foi aceite nessa iteração)
+    """
+    iteration_log.append({
+        "fase": fase,
+        "iteracao": int(iteracao),
+        "accepted": int(bool(accepted)),
+        "score": float(metrics["score"]),
+        "term_ratio_scheduled": float(metrics["contrib_ratio_scheduled"]),
+        "term_util_rooms":      float(metrics["contrib_util_rooms"]),
+        "term_prio_rate":       float(metrics["contrib_prio_rate"]),
+        "term_norm_wait_term":  float(metrics["contrib_norm_wait_term"]),
+        "term_excess_block_penalty": float(metrics["contrib_excess_block_penalty"]),
+    })
 
 def eval_components(assignments_seq, rooms_free, feas, weights=EVAL_WEIGHTS):
     """Calcula métricas detalhadas e contribuições dos termos do score."""
@@ -1305,6 +1326,9 @@ for it in range(N_ILS_ITER):
     )
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
     new_metrics = eval_components(neigh_seq, neigh_rooms_free, neigh_feas)
+    # registar a iteração (antes de decidir aceitar ou não)
+    log_iteration("ILS1_SWAP", it, new_metrics, accepted=(neigh_score > current_score))
+
 
     if neigh_score > current_score:
         # aceitar
@@ -1362,6 +1386,7 @@ for it in range(N_ILS2_ITER):
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
     new_metrics = eval_components(neigh_seq, neigh_rooms_free, neigh_feas)
+    log_iteration("ILS2_ADD_ONLY", it, new_metrics, accepted=(neigh_score > current_score))
 
     if neigh_score > current_score:
         current_assignments = neigh_seq.copy()
@@ -1473,6 +1498,7 @@ for it in range(N_ILS4_ITER):
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
     new_metrics = eval_components(neigh_seq, neigh_rooms_free, neigh_feas)
+    log_iteration("LS3_CROSS_ROOM", it, new_metrics, accepted=(neigh_score > current_score))
 
     if neigh_score > current_score:
         current_assignments = neigh_seq.copy()
@@ -1629,6 +1655,7 @@ for it in range(N_ILS_ITER):
 
     neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor_assignments_ls4)
     new_metrics = eval_components(neigh_seq, neigh_rooms_free, neigh_feas)
+    log_iteration("LS4_RESEQUENCE", it, new_metrics, accepted=(neigh_score > current_score))
 
     # FIRST IMPROVEMENT
     if neigh_score > current_score:
@@ -1870,14 +1897,19 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
     # Unassigned (solução final)
     unassigned_patients.to_excel(writer, sheet_name="Unassigned_ILS", index=False)
 
-        # ======== SENSITIVITY LOG ========
+    # ======== SENSITIVITY LOG (melhorias aceites) ========
     if improvement_log:
         df_score_log = pd.DataFrame(improvement_log).sort_values(["fase", "iteracao"])
     else:
         df_score_log = pd.DataFrame([{"info": "Nenhuma melhoria registada"}])
     df_score_log.to_excel(writer, sheet_name="Score_Improvement_Log", index=False)
 
-    
+    # ======== ITERATIONS LOG (todas as iterações, só termos do score) ========
+    if iteration_log:
+        df_iter_log = pd.DataFrame(iteration_log).sort_values(["fase", "iteracao"])
+    else:
+        df_iter_log = pd.DataFrame([{"info": "Sem iterações registadas"}])
+    df_iter_log.to_excel(writer, sheet_name="Iterations_Log", index=False)  
 
 
 # ---------- 8) TEXT-BASED SCHEDULE (formato tipo imagem) ----------
