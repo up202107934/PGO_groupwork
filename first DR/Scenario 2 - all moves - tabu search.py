@@ -545,12 +545,10 @@ def candidate_blocks_for_patient_in_solution(assignments, patient_row,
     sid = int(patient_row["surgeon_id"])
     need = int(patient_row["duration"]) + CLEANUP
 
-    # disponibilidade do cirurgião
     surg_ok = df_surgeons[
         (df_surgeons["surgeon_id"] == sid) & (df_surgeons["available"] == 1)
     ][["day","shift"]]
 
-    # capacidade por bloco (a partir do assignments atual)
     rooms_base = df_rooms[["room","day","shift","available"]].copy()
     rooms_base["cap_min"] = rooms_base["available"] * C_PER_SHIFT
 
@@ -561,26 +559,31 @@ def candidate_blocks_for_patient_in_solution(assignments, patient_row,
         used_by_block = rooms_base[["room","day","shift"]].copy()
         used_by_block["used_min"] = 0
 
-    rooms_join = rooms_base.merge(used_by_block, on=["room","day","shift"], how="left").fillna({"used_min": 0})
+    rooms_join = rooms_base.merge(used_by_block, on=["room","day","shift"], how="left"
+                 ).fillna({"used_min": 0})
     rooms_join["free_min"] = (rooms_join["cap_min"] - rooms_join["used_min"]).clip(lower=0)
 
-    cap_ok = rooms_join[(rooms_join["available"] == 1) & (rooms_join["free_min"] >= need)][["room","day","shift","free_min"]]
+    # usar a mesma lógica do Step 2: cabe até C_PER_SHIFT + TOLERANCE
+    cap_ok = rooms_join[
+        (rooms_join["available"] == 1) &
+        (rooms_join["used_min"] + need <= C_PER_SHIFT + TOLERANCE)
+    ][["room","day","shift","free_min"]]
 
     cand = surg_ok.merge(cap_ok, on=["day","shift"], how="inner")
 
-    # carga do cirurgião por (day,shift)
+    # limite de carga do cirurgião, também com tolerância
     if len(assignments):
         sload = (assignments[assignments["surgeon_id"] == sid]
                  .groupby(["day","shift"], as_index=False)
-                 .agg(used_min=("used_min","sum")))
+                 .agg(surg_used=("used_min","sum")))
     else:
-        sload = pd.DataFrame(columns=["day","shift","used_min"])
+        sload = pd.DataFrame(columns=["day","shift","surg_used"])
 
-    cand = cand.merge(sload, on=["day","shift"], how="left").fillna({"used_min": 0})
-    cand = cand[(cand["used_min"] + need) <= C_PER_SHIFT]
+    cand = cand.merge(sload, on=["day","shift"], how="left").fillna({"surg_used": 0})
+    cand = cand[(cand["surg_used"] + need) <= C_PER_SHIFT + TOLERANCE]
 
-    # NOTE: **NO ROOM-LOCK**: we intentionally do NOT restrict to same room
     return cand
+
 
 def sequence_global_by_surgeon(assignments_enriched, C_PER_SHIFT, CLEANUP, TOLERANCE, ROOM_CHANGE_TIME):
     if assignments_enriched.empty:
@@ -1177,13 +1180,6 @@ initial_eval = evaluate_schedule(
 #        FISRT ITERATED LOCAL SEARCH 
 # =========================================================
 
-N_ILS_ITER = 100
-MAX_SWAP_OUT = 2
-MAX_SWAP_IN  = 2
-
-# 1) SOLUÇÃO CORRENTE = SOLUÇÃO INICIAL (DEPOIS DO HEURÍSTICO)
-current_assignments = df_assignments.copy()
-
 # Função auxiliar: corre TODA a pipeline do teu código:
 def full_evaluation(assignments):
     # 1) Merge com pacientes
@@ -1226,51 +1222,177 @@ def full_evaluation(assignments):
 
     return ev["score"], seq, rooms_free, feas, enriched
 
+# =========================================================
+#        TABU SEARCH — SWAP (remove/insere pacientes)
+# =========================================================
 
-# Avaliar solução inicial
-current_score, current_seq, current_rooms_free, current_feas, _ = full_evaluation(current_assignments)
+TABU_TENURE = 7        # nº de iterações que um paciente fica tabu
+TABU_ITERS  = 200      # nº máximo de iterações
+TABU_NEIGH_SIZE = 20   # quantos vizinhos testar por iteração
 
-best_score = current_score
-best_assignments = current_assignments.copy()
-best_seq = current_seq.copy()
-best_rooms_free = current_rooms_free.copy()
-best_feas = current_feas  
+def tabu_search_swap(initial_assignments,
+                     df_patients,
+                     df_rooms,
+                     df_surgeons,
+                     C_PER_SHIFT,
+                     tabu_tenure=TABU_TENURE,
+                     n_iters=TABU_ITERS,
+                     neigh_size=TABU_NEIGH_SIZE,
+                     max_swap_out=2,
+                     max_swap_in=2):
+    """
+    Tabu Search usando a vizinhança generate_neighbor_swap.
+    Atributo tabu = patient_id que foi mexido (entrou ou saiu).
+    """
 
-print("\nILS START")
-print("Initial score:", current_score)
+    # --- solução corrente ---
+    current_assignments = initial_assignments.copy()
+    current_score, current_seq, current_rooms_free, current_feas, _ = \
+        full_evaluation(current_assignments)
 
-for it in range(N_ILS_ITER):
+    # --- melhor solução global ---
+    best_assignments = current_assignments.copy()
+    best_score = current_score
+    best_seq = current_seq.copy()
+    best_rooms_free = current_rooms_free.copy()
+    best_feas = current_feas
 
-    # Gerar vizinho (swap i↔j)
-    neighbor, ids_out, ids_in = generate_neighbor_swap(
-        current_assignments,
-        df_patients,
-        df_rooms,
-        df_surgeons,
-        C_PER_SHIFT,
-        max_swap_out=MAX_SWAP_OUT,
-        max_swap_in=MAX_SWAP_IN
-    )
+    # tabu_until[patient_id] = iteração em que deixa de ser tabu
+    tabu_until = {}
 
-    neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
+    print("\nTABU SEARCH (swap) START")
+    print(f"Initial score: {current_score:.4f}")
 
-    # Aceitar se SCORE melhorar
-    if neigh_score > current_score:
-        current_assignments = neighbor.copy()
-        current_score = neigh_score
+    for it in range(1, n_iters + 1):
 
-        # Atualizar melhor global
-        if neigh_score > best_score:
-            best_score = neigh_score
-            best_assignments = neighbor.copy()
-            best_seq = neigh_seq.copy()
-            best_rooms_free = neigh_rooms_free.copy()
-            best_feas = neigh_feas 
+        best_neigh = None
+        best_neigh_score = float("-inf")
+        best_neigh_changed = set()
+        best_neigh_ids_out = []
+        best_neigh_ids_in = []
 
-        print(f"[Iter {it}] Improved score to {current_score:.4f} | "
-              f"removed={ids_out} | added={ids_in}")
-    else:
-       None
+        # --- 1) gerar vários vizinhos e escolher o melhor admissível ---
+        for _ in range(neigh_size):
+            move_type = random.choice(["swap", "add", "cross"])
+        
+            if move_type == "swap":
+                neighbor, ids_out, ids_in = generate_neighbor_swap(
+                    current_assignments, df_patients, df_rooms, df_surgeons,
+                    C_PER_SHIFT, max_swap_out=max_swap_out, max_swap_in=max_swap_in
+                )
+        
+            elif move_type == "add":
+                neighbor, ids_in = generate_neighbor_add_only(
+                    current_assignments, df_patients, df_rooms, df_surgeons,
+                    C_PER_SHIFT, max_add=2
+                )
+                ids_out = []
+        
+            else:  # "cross"
+                neighbor, swap_info = generate_neighbor_cross_room_swap(current_assignments)
+                if swap_info is None:
+                    continue
+                ids_out = swap_info["from_roomA_to_roomB"] + swap_info["from_roomB_to_roomA"]
+                ids_in = ids_out[:]  # mesmos pacientes, mas trocaram de sala
+        
+            changed_pids = set(ids_out) | set(ids_in)
+            if not changed_pids:
+                continue
+
+            # estado tabu para este movimento (algum dos pacientes ainda tabu?)
+            is_tabu = any(tabu_until.get(pid, -1) > it for pid in changed_pids)
+
+            neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = \
+                full_evaluation(neighbor)
+
+            # ASPIRAÇÃO: permite movimento tabu se for melhor que best_score
+            if is_tabu and neigh_score <= best_score:
+                continue
+
+            # escolhemos o melhor vizinho (pode ser pior que o current!)
+            if neigh_score > best_neigh_score:
+                best_neigh = neighbor
+                best_neigh_score = neigh_score
+                best_neigh_changed = changed_pids
+                best_neigh_ids_out = ids_out
+                best_neigh_ids_in = ids_in
+
+        # se não encontramos vizinho admissível, terminamos
+        if best_neigh is None:
+            print(f"[TABU Iter {it}] No admissible neighbor — stopping.")
+            break
+
+        # --- 2) mover para o melhor vizinho admissível ---
+        current_assignments = best_neigh
+        current_score = best_neigh_score
+
+        # atualizar lista tabu: pacientes mexidos ficam tabu_tenure iterações
+        for pid in best_neigh_changed:
+            tabu_until[pid] = it + tabu_tenure
+
+        # limpar entradas expiradas
+        tabu_until = {pid: exp for pid, exp in tabu_until.items() if exp > it}
+
+        # --- 3) atualizar melhor global, se for o caso ---
+        improved_global = False
+        if current_score > best_score:
+            improved_global = True
+            best_score = current_score
+            best_assignments = current_assignments.copy()
+            best_seq, best_rooms_free, best_feas = \
+                full_evaluation(best_assignments)[1:4]
+
+        status = "GLOBAL" if improved_global else "LOCAL"
+        print(
+            f"[TABU Iter {it:03d}] {status} "
+            f"current={current_score:.4f} | best={best_score:.4f} "
+            f"| removed={best_neigh_ids_out} | added={best_neigh_ids_in}"
+        )
+
+    return best_assignments, best_score, best_seq, best_rooms_free, best_feas
+
+
+
+
+# =========================================================
+#   TABU SEARCH em vez do ILS #1 (swap)
+# =========================================================
+
+# --- PROTEÇÃO: se o heurístico não agendou nada ---
+if len(df_assignments) == 0:
+    print("\n[WARNING] Heurístico inicial não conseguiu agendar pacientes.")
+    print("Saltando Tabu Search...")
+    
+    best_assignments = df_assignments.copy()
+    best_score = 0.0
+    best_seq = pd.DataFrame()
+    best_rooms_free = build_room_free_from_assignments(df_assignments, df_rooms, C_PER_SHIFT)
+    best_feas = feasibility_metrics(df_assignments, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
+
+else:
+    # Tabu Search só corre se houver algo para otimizar
+    best_assignments, best_score, best_seq, best_rooms_free, best_feas = \
+        tabu_search_swap(
+            initial_assignments=df_assignments,  # ✅ FIXO: usa df_assignments, não best_assignments
+            df_patients=df_patients,
+            df_rooms=df_rooms,
+            df_surgeons=df_surgeons,
+            C_PER_SHIFT=C_PER_SHIFT,
+            tabu_tenure=15,
+            n_iters=500,
+            neigh_size=50,
+            max_swap_out=6,
+            max_swap_in=5
+        )
+
+
+# A partir daqui, usa a solução do TABU como ponto de partida
+current_assignments = best_assignments.copy()
+current_score = best_score
+current_seq = best_seq.copy()
+current_rooms_free = best_rooms_free.copy()
+current_feas = best_feas
+
        
        
 # ============================================================
@@ -1289,7 +1411,7 @@ best_seq = current_seq.copy()
 best_rooms_free = current_rooms_free.copy()
 best_feas = current_feas
 
-N_ILS2_ITER = 50
+N_ILS2_ITER = 150
 
 print("Initial add-only score:", current_score)
 
@@ -1405,7 +1527,7 @@ best_feas = current_feas
 
 print("Initial resequence score:", current_score)
 
-N_ILS_ITER = 30  # mesmo número que tinhas
+N_ILS_ITER = 80  # mesmo número que tinhas
 
 for it in range(N_ILS_ITER):
 
@@ -1512,9 +1634,11 @@ for it in range(N_ILS4_ITER):
             f"[ILS4 Iter {it}] {'GLOBAL' if improved_global else 'LOCAL'} "
             f"score improved: {neigh_score:.4f}"
         )
-        print(f"   ↪ swap p{swap_info['pidA']} ↔ p{swap_info['pidB']} "
-              f"(day={swap_info['day']} shift={swap_info['shift']}) "
-              f"rooms {swap_info['roomA_before']} ↔ {swap_info['roomB_before']}")
+        print(
+            f"   ↪ swap day={swap_info['day']}, shift={swap_info['shift']} | "
+            f"room {swap_info['roomA']} -> {swap_info['roomB']} (p {swap_info['from_roomA_to_roomB']}) | "
+            f"room {swap_info['roomB']} -> {swap_info['roomA']} (p {swap_info['from_roomB_to_roomA']})"
+        )
 
 print("\n========== END OF ILS #4 ==========\n")
 
@@ -1802,5 +1926,26 @@ best_eval = evaluate_schedule(
     rooms_free=best_rooms_free,
     excess_block_min=best_feas["excess_block_min"]
 )
+
+# =========================================================
+#        DEBUG: Check initial solution
+# =========================================================
+
+print(f"\n[DEBUG] Heurístico inicial: {len(df_assignments)} pacientes agendados")
+print(f"[DEBUG] Remaining patients: {len(remaining)}")
+
+if len(df_assignments) == 0:
+    print("[DEBUG] Nenhum paciente agendado — investigar Step-1/Step-2 filters")
+    print(f"[DEBUG] TOLERANCE={TOLERANCE}, CLEANUP={CLEANUP}, C_PER_SHIFT={C_PER_SHIFT}")
+    
+    # Mostrar blocos disponíveis
+    available_blocks = df_rooms[df_rooms["available"]==1]
+    print(f"[DEBUG] Blocos disponíveis: {len(available_blocks)}")
+    print(available_blocks.head(10))
+    
+    # Mostrar primeiro paciente
+    if len(df_patients) > 0:
+        first_patient = df_patients.iloc[0]
+        print(f"[DEBUG] Primeiro paciente: {dict(first_patient)}")
 
 
