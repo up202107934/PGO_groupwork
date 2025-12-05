@@ -23,16 +23,16 @@ np.random.seed(42)
 # ------------------------------
 
 
-DATA_FILE = "Instance_NC_30.dat"
+DATA_FILE = "Instance_C1_30.dat"
 
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
 
-ALPHA1 = 0.70 # priority
-ALPHA2 = 0.10  # waited days
-ALPHA3 = 0.05 # deadline closeness
-ALPHA4 = 0.05 # feasible blocks
+ALPHA1 = 0.25 # priority
+ALPHA2 = 0.25  # waited days
+ALPHA3 = 0.25 # deadline closeness
+ALPHA4 = 0.25 # feasible blocks
 
 ALPHA5 = 1/3
 ALPHA6 = 1/3

@@ -1396,7 +1396,7 @@ df_surgeon_free = best_surgeon_free.copy()
 #        ILS #3 — RESEQUENCING (mudar a ordem dentro dos blocos)
 # =========================================================
 
-print("\n\n========== STARTING ILS #2 — RESEQUENCE ==========\n")
+print("\n\n========== STARTING ILS #3 — RESEQUENCE ==========\n")
 
 # ponto de partida = melhor solução da ILS #2
 current_enriched = assignments_enriched.copy()
