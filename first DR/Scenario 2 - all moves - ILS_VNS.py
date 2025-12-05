@@ -1258,6 +1258,154 @@ def full_evaluation(assignments):
 
     return ev["score"], seq, rooms_free, feas, enriched
 
+def run_full_local_search_pipeline(start_assignments):
+    """Run the four local-search moves starting from ``start_assignments``.
+
+    Returns the best assignments and full evaluation tuple produced by the
+    pipeline (score, seq, rooms_free, feas, enriched).
+    """
+
+    # ---------- LS1: swap (remove/add) ----------
+    current_assignments = start_assignments.copy()
+    current_score, current_seq, current_rooms_free, current_feas, _ = full_evaluation(current_assignments)
+
+    best_score = current_score
+    best_assignments = current_assignments.copy()
+
+    N_ILS_ITER = 100
+    MAX_SWAP_OUT = 2
+    MAX_SWAP_IN = 2
+
+    for _ in range(N_ILS_ITER):
+        neighbor, _, _ = generate_neighbor_swap(
+            current_assignments,
+            df_patients,
+            df_rooms,
+            df_surgeons,
+            C_PER_SHIFT,
+            max_swap_out=MAX_SWAP_OUT,
+            max_swap_in=MAX_SWAP_IN,
+        )
+
+        neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
+
+        if neigh_score > current_score:
+            current_assignments = neighbor.copy()
+            current_score = neigh_score
+
+            if neigh_score > best_score:
+                best_score = neigh_score
+                best_assignments = neighbor.copy()
+
+    # ---------- LS2: add-only ----------
+    current_assignments = best_assignments.copy()
+    current_score, current_seq, current_rooms_free, current_feas, _ = full_evaluation(current_assignments)
+
+    best_score = current_score
+    best_assignments = current_assignments.copy()
+
+    N_ILS2_ITER = 50
+
+    for _ in range(N_ILS2_ITER):
+        neighbor, ids_added = generate_neighbor_add_only(
+            current_assignments,
+            df_patients,
+            df_rooms,
+            df_surgeons,
+            C_PER_SHIFT,
+            max_add=2,
+        )
+
+        if not ids_added:
+            continue
+
+        neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
+
+        if neigh_score > current_score:
+            current_assignments = neighbor.copy()
+            current_score = neigh_score
+
+            if neigh_score > best_score:
+                best_score = neigh_score
+                best_assignments = neighbor.copy()
+
+    # ---------- Prepare enriched view (same steps as original pipeline) ----------
+    assignments_enriched = best_assignments.merge(
+        df_patients[["patient_id", "duration", "priority", "waiting"]],
+        on="patient_id",
+        how="left",
+    )
+    assignments_enriched = sequence_global_by_surgeon(
+        assignments_enriched,
+        C_PER_SHIFT=C_PER_SHIFT,
+        CLEANUP=CLEANUP,
+        TOLERANCE=TOLERANCE,
+        ROOM_CHANGE_TIME=ROOM_CHANGE_TIME,
+    )
+
+    # ---------- LS3: resequencing ----------
+    current_enriched = assignments_enriched.copy()
+    current_enriched["order_hint"] = current_enriched["seq_in_block"]
+
+    current_score, current_seq, current_rooms_free, current_feas, _ = full_evaluation_from_enriched(
+        current_enriched
+    )
+
+    best_score = current_score
+    best_enriched = current_enriched.copy()
+
+    N_ILS3_ITER = 30
+
+    for _ in range(N_ILS3_ITER):
+        neighbor_enriched, _ = generate_neighbor_resequence(
+            current_enriched,
+            max_blocks_to_change=1,
+            swaps_per_block=1,
+        )
+
+        neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation_from_enriched(
+            neighbor_enriched
+        )
+
+        if neigh_score > current_score:
+            current_enriched = neighbor_enriched.copy()
+            current_score = neigh_score
+
+            if neigh_score > best_score:
+                best_score = neigh_score
+                best_enriched = neighbor_enriched.copy()
+
+    # ---------- LS4: cross-room swap ----------
+    current_assignments = best_assignments.copy()
+    current_score, current_seq, current_rooms_free, current_feas, _ = full_evaluation(current_assignments)
+
+    best_score = current_score
+    best_assignments_4 = current_assignments.copy()
+
+    N_ILS4_ITER = 50
+
+    for _ in range(N_ILS4_ITER):
+        neighbor, swap_info = generate_neighbor_cross_room_swap(current_assignments)
+
+        if swap_info is None:
+            continue
+
+        neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, _ = full_evaluation(neighbor)
+
+        if neigh_score > current_score:
+            current_assignments = neighbor.copy()
+            current_score = neigh_score
+
+            if neigh_score > best_score:
+                best_score = neigh_score
+                best_assignments_4 = neighbor.copy()
+
+    # ---------- Final evaluation of the best solution ----------
+    final_score, final_seq, final_rooms_free, final_feas, final_enriched = full_evaluation(
+        best_assignments_4
+    )
+
+    return best_assignments_4, final_enriched, final_seq, final_rooms_free, final_feas, final_score
 
 # Avaliar solução inicial
 current_score, current_seq, current_rooms_free, current_feas, _ = full_evaluation(current_assignments)
@@ -1645,8 +1793,8 @@ def shake_with_vns(current_assignments, current_enriched, k):
 
 
 K_MAX = 4
-MAX_ILS5_ITER = 80
-MAX_NO_IMPROVE = 30
+MAX_ILS5_ITER = 50
+MAX_NO_IMPROVE = 10
 
 # ponto de partida = melhor solução encontrada até aqui
 current_assignments = best_assignments_4.copy()
@@ -1674,47 +1822,56 @@ for it in range(MAX_ILS5_ITER):
     if mode == "enriched":
         neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, neigh_enriched = \
             full_evaluation_from_enriched(neigh_enriched)
-        neigh_assign = current_assignments.copy()
+       
     else:
         neigh_score, neigh_seq, neigh_rooms_free, neigh_feas, neigh_enriched = \
             full_evaluation(neigh_assign)
 
-    if neigh_score > current_score:
-        improved_global = neigh_score > best_score
-        current_score = neigh_score
-        current_assignments = neigh_seq[[
-            "patient_id", "room", "day", "shift", "used_min", "surgeon_id", "iteration"
-        ]].copy()
-        current_enriched = neigh_enriched.copy()
+    # Sempre aplicar a sequência completa de local search ao vizinho gerado
+    ls_start_assignments = neigh_seq[[
+        "patient_id", "room", "day", "shift", "used_min", "surgeon_id", "iteration"
+    ]].copy()
+    (
+        ls_best_assignments,
+        ls_best_enriched,
+        ls_best_seq,
+        ls_best_rooms_free,
+        ls_best_feas,
+        ls_best_score,
+    ) = run_full_local_search_pipeline(ls_start_assignments)
+
+    if ls_best_score > current_score:
+        improved_global = ls_best_score > best_score
+        current_score = ls_best_score
+        current_assignments = ls_best_assignments.copy()
+        current_enriched = ls_best_enriched.copy()
 
         best_suffix = "GLOBAL" if improved_global else "LOCAL"
         best_before = best_score
         if improved_global:
-            best_score = neigh_score
-            best_assignments_vns = current_assignments.copy()
-            best_enriched_vns = neigh_enriched.copy()
-            best_seq_vns = neigh_seq.copy()
-            best_rooms_free_vns = neigh_rooms_free.copy()
-            best_feas_vns = neigh_feas
+            best_score = ls_best_score
+            best_assignments_vns = ls_best_assignments.copy()
+            best_enriched_vns = ls_best_enriched.copy()
+            best_seq_vns = ls_best_seq.copy()
+            best_rooms_free_vns = ls_best_rooms_free.copy()
+            best_feas_vns = ls_best_feas
 
         print(
-            f"[ILS5 It {it:02d}] {best_suffix} improvement: "
+            f"[ILS5 It {it:02d}] {best_suffix} improvement (k={k}): "
             f"current={current_score:.4f} | best {best_before:.4f}→{best_score:.4f}"
         )
-        k = 1
-        no_improve = 0
+        k = 1  # Reset a k=1 quando há melhoria (em qualquer vizinhança)
+        no_improve = 0  # Reset do contador de estagnação
     else:
         k = k + 1 if k < K_MAX else 1
         no_improve += 1
         print(
-            f"[ILS5 {it:02d}] sem melhoria (score= {neigh_score:.4f}); "
-            
-            f"------------------------------------------------------------------------------"
-           # f"| sem melhoria há {no_improve} iterações"
+            f"[ILS5 {it:02d}] sem melhoria em k={k-1 if k > 1 else K_MAX} (score= {ls_best_score:.4f}); "
+            f"k agora={k} | estagnação há {no_improve} ciclos"
         )
 
     if no_improve >= MAX_NO_IMPROVE:
-        print("Paragem por estagnação no ILS5.")
+        print(f"Paragem por estagnação no ILS5 ({no_improve} ciclos sem melhoria).")
         break
 
 print("\n========== END OF ILS #5 ==========\n")
@@ -1986,5 +2143,13 @@ best_eval = evaluate_schedule(
     rooms_free=best_rooms_free,
     excess_block_min=best_feas["excess_block_min"]
 )
+
+# =========================================================
+#        FINAL SUMMARY — MELHOR SOLUÇÃO ENCONTRADA
+# =========================================================
+
+print("\n" + "="*70)
+print(f"Melhor solução encontrada com score: {best_eval['score']:.4f}")
+print("="*70 + "\n")
 
 
