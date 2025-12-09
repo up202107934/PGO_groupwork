@@ -19,15 +19,15 @@ np.random.seed(42)
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "Instance_C1_30.dat"
+DATA_FILE = "Instance_GEN_5.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time 
 
-ALPHA1 = 0.70 # priority
-ALPHA2 = 0.10  # waited days
-ALPHA3 = 0.05 # deadline closeness
-ALPHA4 = 0.05 # feasible blocks
+ALPHA1 = 0.25 # priority
+ALPHA2 = 0.25  # waited days
+ALPHA3 = 0.25 # deadline closeness
+ALPHA4 = 0.25 # feasible blocks
 
 ALPHA5 = 1/3
 ALPHA6 = 1/3
@@ -377,26 +377,90 @@ iteration_log = []
 
 def log_iteration(fase, iteracao, metrics, accepted):
     """
-    Regista uma linha por iteração com SÓ os termos do score (contribuições ponderadas).
-    - fase: string (ex: 'ILS1_SWAP', 'ILS2_ADD_ONLY', 'LS3_CROSS_ROOM', 'LS4_RESEQUENCE')
-    - iteracao: int
-    - metrics: resultado de eval_components(...)
-    - accepted: True/False (se o vizinho foi aceite nessa iteração)
+    Regista apenas as colunas pedidas pelo utilizador.
     """
     iteration_log.append({
         "fase": fase,
         "iteracao": int(iteracao),
         "accepted": int(bool(accepted)),
+
         "score": float(metrics["score"]),
-        "term_ratio_scheduled": float(metrics["contrib_ratio_scheduled"]),
-        "term_util_rooms":      float(metrics["contrib_util_rooms"]),
-        "term_prio_rate":       float(metrics["contrib_prio_rate"]),
-        "term_norm_wait_term":  float(metrics["contrib_norm_wait_term"]),
-        "term_excess_block_penalty": float(metrics["contrib_excess_block_penalty"]),
+        "assigned_patients": int(metrics["assigned_patients"]),
+        "ratio_scheduled_raw": float(metrics["ratio_scheduled_raw"]),
+        "util_rooms_raw": float(metrics["util_rooms_raw"]),
+        "avg_waiting_raw": float(metrics["avg_waiting_raw"]),
+        "avg_priority_raw": float(metrics["avg_priority_raw"]),
+        "deadline_overdue_patients": int(metrics["deadline_overdue_patients"]),
+        "excess_block_min_raw": int(metrics["excess_block_min_raw"]),
+        "excess_surgeon_min_raw": int(metrics["excess_surgeon_min_raw"]),
     })
 
+
 def eval_components(assignments_seq, rooms_free, feas, weights=EVAL_WEIGHTS):
-    """Calcula métricas detalhadas e contribuições dos termos do score."""
+    """
+    Calcula métricas detalhadas para exportar no iteration_log
+    e também as componentes do score necessárias para o improvement_log.
+    """
+
+    total_patients = len(df_patients)
+
+    # -------- Pacientes agendados --------
+    assigned_patients = int(assignments_seq["patient_id"].nunique()) if len(assignments_seq) else 0
+    ratio_scheduled_raw = assigned_patients / total_patients if total_patients > 0 else 0.0
+
+    # -------- Utilização real --------
+    util_rooms_raw = float(
+        rooms_free.loc[rooms_free["cap_min"] > 0, "utilization"].mean()
+    ) if len(rooms_free) else 0.0
+
+    # -------- Priority & Waiting médios --------
+    if len(assignments_seq):
+        missing_cols = [c for c in ["priority", "waiting"] if c not in assignments_seq.columns]
+        if missing_cols:
+            merged = assignments_seq.merge(
+                df_patients[["patient_id", "priority", "waiting"]],
+                on="patient_id", how="left"
+            )
+        else:
+            merged = assignments_seq
+
+        avg_priority_raw = float(merged["priority"].mean())
+        avg_waiting_raw = float(merged["waiting"].mean())
+    else:
+        avg_priority_raw = 0.0
+        avg_waiting_raw = 0.0
+
+    # -------- Overdues APENAS entre os pacientes agendados --------
+    # -------- Overdues APENAS entre pacientes AGENDADOS --------
+    if len(assignments_seq):
+    
+        # Se priority/waiting não existem (sequenciador removeu-as), fazemos merge
+        cols_needed = ["priority", "waiting"]
+        missing_cols = [c for c in cols_needed if c not in assignments_seq.columns]
+    
+        if missing_cols:
+            pats_assigned = assignments_seq.merge(
+                df_patients[["patient_id", "priority", "waiting"]],
+                on="patient_id",
+                how="left"
+            )
+        else:
+            pats_assigned = assignments_seq.copy()
+    
+        # Agora priority e waiting EXISTEM de certeza
+        pats_assigned["deadline_limit"] = pats_assigned["priority"].apply(deadline_limit_from_priority)
+        pats_assigned["overdue_days"] = (pats_assigned["waiting"] - pats_assigned["deadline_limit"]).clip(lower=0)
+        deadline_overdue_patients = int((pats_assigned["overdue_days"] > 0).sum())
+    
+    else:
+        deadline_overdue_patients = 0
+
+
+    # -------- Excessos --------
+    excess_block_min_raw = int(feas["excess_block_min"])
+    excess_surgeon_min_raw = int(feas["excess_surgeon_min"])
+
+    # -------- Componentes do score --------
     ev = evaluate_schedule(
         assignments=assignments_seq,
         patients=df_patients,
@@ -404,22 +468,32 @@ def eval_components(assignments_seq, rooms_free, feas, weights=EVAL_WEIGHTS):
         excess_block_min=feas["excess_block_min"],
         weights=weights
     )
-    w1, w2, w3, w4 = weights
-    contrib = {
-        "contrib_ratio_scheduled": w1 * ev["ratio_scheduled"],
-        "contrib_util_rooms":      w2 * ev["util_rooms"],
-        "contrib_prio_rate":       w3 * ev["prio_rate"],
-        "contrib_norm_wait_term":  w4 * ev["norm_wait_term"],
-        "contrib_excess_block_penalty": -0.001 * feas["excess_block_min"],
-    }
-    assigned = int(assignments_seq["patient_id"].nunique()) if len(assignments_seq) else 0
+
     return {
-        **ev,
-        **contrib,
-        "excess_block_min": int(feas["excess_block_min"]),
-        "assigned_patients": assigned,
-        "unassigned_patients": int(len(df_patients) - assigned),
+        # === termos do score ===
+        "score": float(ev["score"]),
+        "ratio_scheduled": float(ev["ratio_scheduled"]),
+        "util_rooms": float(ev["util_rooms"]),
+        "prio_rate": float(ev["prio_rate"]),
+        "norm_wait_term": float(ev["norm_wait_term"]),
+        "excess_block_min": excess_block_min_raw,
+
+        # === métricas “raw” ===
+        "assigned_patients": assigned_patients,
+        "ratio_scheduled_raw": ratio_scheduled_raw,
+        "util_rooms_raw": util_rooms_raw,
+        "avg_waiting_raw": avg_waiting_raw,
+        "avg_priority_raw": avg_priority_raw,
+        "deadline_overdue_patients": deadline_overdue_patients,
+        "excess_block_min_raw": excess_block_min_raw,
+        "excess_surgeon_min_raw": excess_surgeon_min_raw,
     }
+
+
+
+
+
+   
 
 def summarize_change(prev, new, weights=EVAL_WEIGHTS):
     """Computa deltas e identifica o principal driver da mudança do score."""
