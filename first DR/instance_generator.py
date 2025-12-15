@@ -163,22 +163,32 @@ def estimate_surgeon_availability_probability(bases):
 def generate_instance_from_many(bases, global_dist, p_block_open, p_surg_av, n_patients=None):
     """
     Gera uma nova instância:
-      - nº de pacientes aleatório entre [min, max] das bases (se n_patients=None)
+      - nº de pacientes aleatório entre [min-20, max+20] das bases (se n_patients=None)
+      - nº de salas aleatório entre [1, max+10]
+      - nº de cirurgiões aleatório entre [2, max+10]
       - sampling de Duration, Priority, Waiting, Surgeon de distribuições globais
       - BlockAvailability e SurgeonAvailability gerados aleatoriamente com
         probabilidades p_block_open e p_surg_av.
     """
-    # usar a primeira base como referência estrutural (nº salas, cirurgiões, dias)
+    # usar a primeira base como referência para o número de dias
     ref = bases[0]
-    n_rooms    = ref["NumberOfRooms"]
-    n_surgeons = ref["NumberSurgeons"]
-    n_days     = ref["NumberOfDays"]
+    n_days = ref["NumberOfDays"]
 
-    # nº de pacientes
+    # nº de pacientes: expandir intervalo com +20 no max e -20 no min
     if n_patients is None:
-        n_min = min(b["NumberPatients"] for b in bases)
-        n_max = max(b["NumberPatients"] for b in bases)
+        n_min = max(1, min(b["NumberPatients"] for b in bases) - 20)
+        n_max = max(b["NumberPatients"] for b in bases) + 20
         n_patients = random.randint(n_min, n_max)
+
+    # nº de salas: variável entre 1 e max observado + 10
+    n_rooms_min = 1
+    n_rooms_max = max(b["NumberOfRooms"] for b in bases) + 10
+    n_rooms = random.randint(n_rooms_min, n_rooms_max)
+
+    # nº de cirurgiões: variável entre 2 e max observado + 10
+    n_surgeons_min = 2
+    n_surgeons_max = max(b["NumberSurgeons"] for b in bases) + 10
+    n_surgeons = random.randint(n_surgeons_min, n_surgeons_max)
 
     # pacientes: sampling global
     dur  = random.choices(global_dist["durations"],  k=n_patients)
@@ -187,18 +197,21 @@ def generate_instance_from_many(bases, global_dist, p_block_open, p_surg_av, n_p
     surg = random.choices(global_dist["surgeons"],   k=n_patients)
 
     # BlockAvailability: [day][room][shift]
+    # Usar probabilidade variável entre 0.15 e 0.35 para ter diversidade
     new_block_av = [
         [
-            [1 if random.random() < p_block_open else 0 for _sh in range(2)]
+            [1 if random.random() < random.uniform(0.15, 0.35) else 0 for _sh in range(2)]
             for _r in range(n_rooms)
         ]
         for _d in range(n_days)
     ]
 
     # SurgeonAvailability: [surgeon][day][shift]
+    # Usar probabilidade variável entre 0.6 e 0.9 para cada cirurgião
+    # (em vez da média das instâncias base que pode ser sempre 1)
     new_surg_av = [
         [
-            [1 if random.random() < p_surg_av else 0 for _sh in range(2)]
+            [1 if random.random() < random.uniform(0.6, 0.9) else 0 for _sh in range(2)]
             for _d in range(n_days)
         ]
         for _s in range(n_surgeons)
@@ -261,7 +274,7 @@ if __name__ == "__main__":
     print(f"Estimated block-open probability: {p_block_open:.3f}")
     print(f"Estimated surgeon-availability probability: {p_surg_av:.3f}")
 
-    N_INSTANCES = 5  # muda aqui se quiseres mais
+    N_INSTANCES = 50  # muda aqui se quiseres mais
 
     for i in range(1, N_INSTANCES + 1):
         new_data = generate_instance_from_many(
