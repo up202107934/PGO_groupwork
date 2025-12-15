@@ -8,6 +8,11 @@ from pathlib import Path
 import re
 import ast
 import pandas as pd
+import random
+import warnings
+
+# Suprimir todos os warnings
+warnings.filterwarnings("ignore")
 
 # ------------------------------
 # PARAMETERS
@@ -229,22 +234,12 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
     # 5) pacientes não agendados
     n_unassigned = int(len(patients) - len(assignments))
 
-     # 6) violações de prazo clínico (waiting days > limite da prioridade)
-    pats = patients.copy()
-    pats["deadline_limit"] = pats["priority"].apply(deadline_limit_from_priority)
-    pats["overdue_days"] = (pats["waiting"] - pats["deadline_limit"]).clip(lower=0)
-
-    total_overdue_days = int(pats["overdue_days"].sum())
-    n_overdue_patients = int((pats["overdue_days"] > 0).sum())
-
     # score total de infeasibilidade (minimizar; 0 => solução "ideal")
     feasibility_score = (
           block_unavailable_viol
         + surg_unavailable_viol
         + excess_block_min
         + excess_surgeon_min
-        + total_overdue_days      # penaliza atraso em dias
-        + n_overdue_patients      # penaliza nº de doentes em atraso
     )
 
     return {
@@ -253,8 +248,6 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
         "surg_unavailable_viol": surg_unavailable_viol,
         "excess_block_min": excess_block_min,
         "excess_surgeon_min": excess_surgeon_min,
-        "total_overdue_days": total_overdue_days,
-        "n_overdue_patients": n_overdue_patients,
         "feasibility_score": feasibility_score,
         "rooms_cap_join": rooms_join
     }
@@ -278,27 +271,15 @@ def evaluate_schedule(assignments, patients, rooms_free, excess_block_min,
         prio_rate = float(merged["priority"].mean() / pmax) if pmax > 0 else 0.0
 
         # ------------------------------
-        # 2) WAITING TERM + DEADLINE PENALTY
+        # 2) WAITING TERM
         # ------------------------------
         wmax = float(patients["waiting"].max())
 
-        # base: esperar mais = score maior
+        # esperar mais = score maior (normalizado)
         if wmax > 0:
-            base_wait_term = 1.0 - (float(merged["waiting"].mean()) / wmax)
+            norm_wait_term = 1.0 - (float(merged["waiting"].mean()) / wmax)
         else:
-            base_wait_term = 1.0
-
-        # limite por prioridade
-        merged["deadline_limit"] = merged["priority"].apply(deadline_limit_from_priority)
-
-        # atraso face ao limite clínico
-        merged["overdue_days"] = (merged["waiting"] - merged["deadline_limit"]).clip(lower=0)
-        merged["overdue_frac"] = merged["overdue_days"] / merged["deadline_limit"]
-
-        avg_overdue_frac = float(merged["overdue_frac"].mean())
-
-        # termo final de waiting
-        norm_wait_term = max(0.0, base_wait_term - avg_overdue_frac)
+            norm_wait_term = 1.0
 
     else:
         prio_rate = 0.0
@@ -322,10 +303,6 @@ def evaluate_schedule(assignments, patients, rooms_free, excess_block_min,
         "prio_rate": float(prio_rate),
         "norm_wait_term": float(norm_wait_term)
     }
-
-
-
-import random  # garante que tens o import no topo do ficheiro
 
 
 def candidate_blocks_for_patient_in_solution(assignments, patient_row,
@@ -396,471 +373,232 @@ def candidate_blocks_for_patient_in_solution(assignments, patient_row,
     return cand
 
 
-def move_patient(assignments, patients, df_rooms, df_surgeons, C_PER_SHIFT):
+def generate_neighbor_add_only(current_assignments,
+                               df_patients,
+                               df_rooms,
+                               df_surgeons,
+                               C_PER_SHIFT,
+                               max_add=2):
+    """Tenta apenas INSERIR pacientes não agendados (sem remover ninguém).
+
+    Retorna um novo assignments e a lista de pacientes realmente adicionados.
     """
-    Tenta gerar um vizinho movendo 1 doente para outro bloco.
-    Devolve (new_assignments, moved) onde moved=True se conseguiu.
-    """
-    if assignments.empty:
-        return assignments, False
+    assignments = current_assignments.copy()
 
-    # escolher paciente aleatório da solução atual
-    pid = int(random.choice(assignments["patient_id"].tolist()))
-    patient_info = patients[patients["patient_id"] == pid].iloc[0]
+    scheduled_ids = set(assignments["patient_id"].unique().tolist())
+    unassigned_ids = [
+        pid for pid in df_patients["patient_id"].unique().tolist()
+        if pid not in scheduled_ids
+    ]
 
-    # blocos candidatos na solução atual
-    cand_blocks = candidate_blocks_for_patient_in_solution(
-        assignments,
-        patient_info,
-        df_rooms,
-        df_surgeons,
-        C_PER_SHIFT
-    )
+    if not unassigned_ids:
+        return assignments, []
 
-    # remover o bloco onde já está
-    current_row = assignments[assignments["patient_id"] == pid].iloc[0]
-    cand_blocks = cand_blocks[~(
-        (cand_blocks["room"]  == current_row["room"]) &
-        (cand_blocks["day"]   == current_row["day"]) &
-        (cand_blocks["shift"] == current_row["shift"])
-    )]
+    random.shuffle(unassigned_ids)
+    ids_in_candidates = unassigned_ids[:max_add]
+    ids_in_effective = []
 
-    if cand_blocks.empty:
-        return assignments, False
+    for pid in ids_in_candidates:
+        prow = df_patients[df_patients["patient_id"] == pid]
+        if prow.empty:
+            continue
+        prow = prow.iloc[0]
 
-    # escolher 1 bloco aleatório
-    chosen = cand_blocks.sample(1).iloc[0]
+        cand_blocks = candidate_blocks_for_patient_in_solution(
+            assignments, prow, df_rooms, df_surgeons, C_PER_SHIFT
+        )
 
-    # construir novo df_assignments com o paciente movido
-    new_assign = assignments.copy()
-
-    idx_old = new_assign.index[new_assign["patient_id"] == pid]
-    new_assign.loc[idx_old, ["room","day","shift"]] = (
-        int(chosen["room"]), int(chosen["day"]), int(chosen["shift"])
-    )
-
-    # opcional: reordenar por bloco
-    new_assign = new_assign.sort_values(["day","shift","room","iteration"]).reset_index(drop=True)
-
-    return new_assign, True
-
-
-def swap_patients(assignments, patients, df_rooms, df_surgeons, C_PER_SHIFT):
-    """
-    N₂: troca dois doentes de bloco (room, day, shift),
-    mas APENAS entre doentes do MESMO cirurgião.
-    Agora com debug prints para ver o que está a acontecer.
-    """
-    print("\n===== DEBUG: swap_patients =====")
-
-    if len(assignments) < 2:
-        print("➡️  Menos de 2 assignments → impossível trocar.")
-        return assignments, False
-
-    new_assign = assignments.copy()
-
-    # 1) cirurgiões que têm pelo menos 2 doentes agendados
-    surg_counts = new_assign.groupby("surgeon_id")["patient_id"].nunique()
-    eligible_surgeons = surg_counts[surg_counts >= 2].index.tolist()
-    print(f"Cirurgiões elegíveis para swap (>=2 pacientes): {eligible_surgeons}")
-
-    if not eligible_surgeons:
-        print("➡️  Nenhum cirurgião tem 2 doentes → swap impossível.")
-        return assignments, False
-
-    # escolhe 1 cirurgião aleatório
-    sid = random.choice(eligible_surgeons)
-    print(f"🎯 Cirurgião escolhido: {sid}")
-
-    sub = new_assign[new_assign["surgeon_id"] == sid]
-    patient_ids = sub["patient_id"].unique()
-    print(f"Pacientes do cirurgião {sid}: {patient_ids}")
-
-    if len(patient_ids) < 2:
-        print("➡️  Menos de 2 doentes deste cirurgião → impossível trocar.")
-        return assignments, False
-
-    # 2) tentar escolher 2 doentes em blocos diferentes
-    max_tries = 20
-    for attempt in range(1, max_tries + 1):
-        print(f"\n--- Tentativa {attempt}/{max_tries} ---")
-
-        pid1, pid2 = random.sample(list(patient_ids), 2)
-        print(f"Tentativa de swap entre P{pid1} e P{pid2}")
-
-        row1 = sub.loc[sub["patient_id"] == pid1, ["room", "day", "shift"]].iloc[0].copy()
-        row2 = sub.loc[sub["patient_id"] == pid2, ["room", "day", "shift"]].iloc[0].copy()
-
-        print(f"P{pid1} está em (R{row1['room']},D{row1['day']},S{row1['shift']})")
-        print(f"P{pid2} está em (R{row2['room']},D{row2['day']},S{row2['shift']})")
-
-        # se estiverem no mesmo bloco → tentar outro par
-        if (row1["room"] == row2["room"]) and \
-           (row1["day"] == row2["day"]) and \
-           (row1["shift"] == row2["shift"]):
-            print("⚠️  Estão no MESMO bloco → tentar outra combinação.")
+        if len(cand_blocks) == 0:
             continue
 
-        print("✅ Blocos diferentes → pode fazer swap.")
+        chosen = cand_blocks.sort_values(["day", "shift", "room"]).iloc[0]
+        need = int(prow["duration"]) + CLEANUP
 
-        # 3) aplicar swap
-        new_assign.loc[new_assign["patient_id"] == pid1, ["room", "day", "shift"]] = (
-            row2["room"], row2["day"], row2["shift"]
-        )
-        new_assign.loc[new_assign["patient_id"] == pid2, ["room", "day", "shift"]] = (
-            row1["room"], row1["day"], row1["shift"]
-        )
-        print(f"✔️ Swap efetuado:")
-        print(f"   P{pid1} → (R{row2['room']},D{row2['day']},S{row2['shift']})")
-        print(f"   P{pid2} → (R{row1['room']},D{row1['day']},S{row1['shift']})")
-
-        # reordenar
-        new_assign = new_assign.sort_values(["day", "shift", "room", "iteration"]).reset_index(drop=True)
-
-        print("➡️  Swap concluído com sucesso.")
-        return new_assign, True
-
-    print("❌ Não foi possível encontrar dois pacientes em blocos diferentes após várias tentativas.")
-    return assignments, False
-
-
-def swap_with_unassigned(assignments, patients, df_rooms, df_surgeons, C_PER_SHIFT):
-    """
-    N3: tenta inserir o paciente NÃO agendado mais urgente (priority, waiting)
-    e retirar o paciente MENOS urgente de um bloco onde isto seja possível.
-    Este vizinho altera o conjunto de pacientes agendados → mexe no score.
-    """
-    new_assign = assignments.copy()
-
-    # pacientes agendados
-    scheduled_ids = set(new_assign["patient_id"])
-
-    # pacientes não agendados
-    unassigned = patients[~patients["patient_id"].isin(scheduled_ids)]
-    if unassigned.empty:
-        return assignments, False
-
-    # 1) escolher o não-agendado MAIS urgente
-    u_row = unassigned.sort_values(
-        ["priority", "waiting"], ascending=[False, False]
-    ).iloc[0]
-    u_id = int(u_row["patient_id"])
-    u_sid = int(u_row["surgeon_id"])
-    need = int(u_row["duration"]) + CLEANUP
-
-    # 2) blocos onde o cirurgião está disponível
-    surg_ok = df_surgeons[
-        (df_surgeons["surgeon_id"] == u_sid) &
-        (df_surgeons["available"] == 1)
-    ][["day","shift"]]
-
-    # capacidade base por bloco
-    rooms_base = df_rooms[["room","day","shift","available"]].copy()
-    rooms_base["cap_min"] = rooms_base["available"] * C_PER_SHIFT
-
-    # uso atual
-    used_by_block = new_assign.groupby(
-        ["room","day","shift"], as_index=False
-    ).agg(used_min=("used_min","sum"))
-    
-    rooms_join = rooms_base.merge(
-        used_by_block, on=["room","day","shift"], how="left"
-    ).fillna({"used_min":0})
-
-    rooms_join["free_min"] = (
-        rooms_join["cap_min"] - rooms_join["used_min"]
-    ).clip(lower=0)
-
-    # 3) blocos candidatos:
-    #    onde u PODERIA CABER SE tirarmos alguém
-    cand_blocks = surg_ok.merge(
-        rooms_join[rooms_join["available"]==1][["room","day","shift","used_min","cap_min","free_min"]],
-        on=["day","shift"], how="inner"
-    )
-
-    if cand_blocks.empty:
-        return assignments, False
-
-    # escolher um bloco ao acaso
-    b = cand_blocks.sample(1).iloc[0]
-    r, d, sh = int(b["room"]), int(b["day"]), int(b["shift"])
-
-    # pacientes nesse bloco
-    in_block = new_assign[
-        (new_assign["room"] == r) &
-        (new_assign["day"] == d) &
-        (new_assign["shift"] == sh)
-    ].merge(
-        patients[["patient_id","priority","waiting","duration"]],
-        on="patient_id", how="left"
-    )
-
-    if in_block.empty:
-        return assignments, False
-
-    # 4) escolher o paciente MENOS urgente para sair
-    out_row = in_block.sort_values(
-        ["priority","waiting"], ascending=[True, True]
-    ).iloc[0]
-
-    out_id = int(out_row["patient_id"])
-    out_dur = int(out_row["duration"]) + CLEANUP
-
-
-    # 5) verificar capacidade se fizermos a troca
-    used_now = int(b["used_min"])
-    cap = int(b["cap_min"])
-
-    if used_now - out_dur + need > cap:
-        return assignments, False
-    
-    # ========== PRINTS APENAS A PARTIR DAQUI (swap vai acontecer) ==========
-    print(f"\n🔄 SWAP WITH UNASSIGNED:")
-    print(f" → Inserir P{u_id} (prio={u_row['priority']}, wait={u_row['waiting']})")
-    print(f" → Retirar P{out_id} (prio={out_row['priority']}, wait={out_row['waiting']})")
-    print(f" → No bloco (Room={r}, Day={d}, Shift={sh})")
-    
-    # 6) aplicar a troca
-    new_assign = new_assign[new_assign["patient_id"] != out_id].copy()
-
-    new_assign = pd.concat([
-        new_assign,
-        pd.DataFrame([{
-            "patient_id": u_id,
-            "room": r,
-            "day": d,
-            "shift": sh,
+        new_row = {
+            "patient_id": int(pid),
+            "room": int(chosen["room"]),
+            "day": int(chosen["day"]),
+            "shift": int(chosen["shift"]),
             "used_min": need,
-            "surgeon_id": u_sid,
-            "iteration": new_assign["iteration"].max() + 1 if len(new_assign) else 1,
+            "surgeon_id": int(prow["surgeon_id"]),
+            "iteration": -1,
             "W_patient": None,
-            "W_block": None
-        }])
-    ], ignore_index=True)
+            "W_block": None,
+        }
 
-    new_assign = new_assign.sort_values(
-        ["day","shift","room","iteration"]).reset_index(drop=True)
+        assignments = pd.concat(
+            [assignments, pd.DataFrame([new_row])],
+            ignore_index=True
+        )
 
-    return new_assign, True
+        ids_in_effective.append(int(pid))
 
-def swap_with_unassigned_random(assignments, patients, df_rooms, df_surgeons, C_PER_SHIFT):
+    return assignments, ids_in_effective
+
+
+def generate_neighbor_intra_surgeon_swap(current_assignments,
+                                          df_patients,
+                                          df_rooms,
+                                          df_surgeons,
+                                          C_PER_SHIFT):
     """
-    N3 (versão aleatória):
-    - Escolhe UM paciente NÃO agendado ao acaso.
-    - Escolhe UM bloco aleatório onde o cirurgião desse paciente está disponível
-      e onde ele poderia caber se alguém saísse.
-    - Escolhe UM paciente aleatório dentro do bloco para remover.
-    - Realiza a troca APENAS se a capacidade permitir.
-    - Apenas imprime quando um swap real acontece.
+    Troca pacientes do MESMO cirurgião entre blocos diferentes.
+    Tipos de troca: 1-1, 1-2, ou 2-1
+    
+    Retorna:
+      - novo assignments
+      - info da troca (surgeon_id, blocos, pacientes trocados)
+      - sucesso (True/False)
     """
-
-    if assignments.empty:
-        return assignments, False
-
-    new_assign = assignments.copy()
-
-    # pacientes agendados
-    scheduled_ids = set(new_assign["patient_id"])
-
-    # pacientes não agendados
-    unassigned = patients[~patients["patient_id"].isin(scheduled_ids)]
-    if unassigned.empty:
-        return assignments, False
-
-    # 1) escolher um NÃO agendado aleatório
-    u_row = unassigned.sample(1).iloc[0]
-    u_id = int(u_row["patient_id"])
-    u_sid = int(u_row["surgeon_id"])
-    need = int(u_row["duration"]) + CLEANUP
-
-    # 2) blocos onde o cirurgião está disponível
-    surg_ok = df_surgeons[
-        (df_surgeons["surgeon_id"] == u_sid) &
-        (df_surgeons["available"] == 1)
-    ][["day", "shift"]]
-
+    if current_assignments.empty or len(current_assignments) < 2:
+        return current_assignments, {}, False
+    
+    assignments = current_assignments.copy()
+    
+    # Agrupar por cirurgião e bloco
+    assignments['block_key'] = assignments.apply(
+        lambda r: (int(r['room']), int(r['day']), int(r['shift'])), axis=1
+    )
+    
+    # Cirurgiões que operam em pelo menos 2 blocos diferentes
+    surgeon_blocks = assignments.groupby('surgeon_id')['block_key'].nunique()
+    eligible_surgeons = surgeon_blocks[surgeon_blocks >= 2].index.tolist()
+    
+    if not eligible_surgeons:
+        return current_assignments, {}, False
+    
+    # Escolher cirurgião aleatório
+    surgeon_id = random.choice(eligible_surgeons)
+    
+    # Pacientes deste cirurgião
+    surg_patients = assignments[assignments['surgeon_id'] == surgeon_id].copy()
+    
+    # Blocos diferentes onde opera
+    blocks = surg_patients['block_key'].unique().tolist()
+    
+    if len(blocks) < 2:
+        return current_assignments, {}, False
+    
+    # Escolher 2 blocos diferentes
+    block1, block2 = random.sample(blocks, 2)
+    
+    # Pacientes em cada bloco
+    patients_b1 = surg_patients[surg_patients['block_key'] == block1]['patient_id'].tolist()
+    patients_b2 = surg_patients[surg_patients['block_key'] == block2]['patient_id'].tolist()
+    
+    if not patients_b1 or not patients_b2:
+        return current_assignments, {}, False
+    
+    # Escolher tipo de swap aleatoriamente (1-1, 1-2, 2-1)
+    swap_type = random.choice(['1-1', '1-2', '2-1'])
+    
+    # Selecionar pacientes
+    if swap_type == '1-1':
+        if len(patients_b1) < 1 or len(patients_b2) < 1:
+            return current_assignments, {}, False
+        ids_from_b1 = random.sample(patients_b1, 1)
+        ids_from_b2 = random.sample(patients_b2, 1)
+    elif swap_type == '1-2':
+        if len(patients_b1) < 1 or len(patients_b2) < 2:
+            return current_assignments, {}, False
+        ids_from_b1 = random.sample(patients_b1, 1)
+        ids_from_b2 = random.sample(patients_b2, 2)
+    else:  # 2-1
+        if len(patients_b1) < 2 or len(patients_b2) < 1:
+            return current_assignments, {}, False
+        ids_from_b1 = random.sample(patients_b1, 2)
+        ids_from_b2 = random.sample(patients_b2, 1)
+    
+    # Calcular tempo necessário
+    def get_total_duration(patient_ids):
+        total = 0
+        for pid in patient_ids:
+            p_data = df_patients[df_patients['patient_id'] == pid]
+            if not p_data.empty:
+                total += int(p_data['duration'].iloc[0]) + CLEANUP
+        return total
+    
+    time_b1_out = get_total_duration(ids_from_b1)
+    time_b2_out = get_total_duration(ids_from_b2)
+    time_b1_in = time_b2_out
+    time_b2_in = time_b1_out
+    
+    # Verificar capacidade em cada bloco
     rooms_base = df_rooms[["room", "day", "shift", "available"]].copy()
     rooms_base["cap_min"] = rooms_base["available"] * C_PER_SHIFT
-
-    used_by_block = new_assign.groupby(
-        ["room", "day", "shift"], as_index=False
-    ).agg(used_min=("used_min", "sum"))
-
-    rooms_join = rooms_base.merge(
-        used_by_block, on=["room", "day", "shift"], how="left"
-    ).fillna({"used_min": 0})
-
-    rooms_join["free_min"] = (rooms_join["cap_min"] - rooms_join["used_min"]).clip(lower=0)
-
-    # 3) blocos candidatos
-    cand_blocks = surg_ok.merge(
-        rooms_join[rooms_join["available"]==1][["room","day","shift","used_min","cap_min","free_min"]],
-        on=["day","shift"], how="inner"
-    )
-
-    if cand_blocks.empty:
-        return assignments, False
-
-    # 4) escolher bloco aleatório
-    b = cand_blocks.sample(1).iloc[0]
-    r, d, sh = int(b["room"]), int(b["day"]), int(b["shift"])
-
-    # pacientes nesse bloco
-    in_block = new_assign[
-        (new_assign["room"] == r) &
-        (new_assign["day"] == d) &
-        (new_assign["shift"] == sh)
-    ].merge(
-        patients[["patient_id","priority","waiting","duration"]],
-        on="patient_id", how="left"
-    )
-
-    if in_block.empty:
-        return assignments, False
-
-    # 5) paciente aleatório para sair
-    out_row = in_block.sample(1).iloc[0]
-    out_id = int(out_row["patient_id"])
-    out_dur = int(out_row["duration"]) + CLEANUP
-
-    # 6) verificar capacidade
-    used_now = int(b["used_min"])
-    cap = int(b["cap_min"])
-
-    if used_now - out_dur + need > cap:
-        return assignments, False
-
-    # ============================
-    #       PRINTS DO SWAP
-    # ============================
     
-    # 7) aplicar troca
-    new_assign = new_assign[new_assign["patient_id"] != out_id].copy()
-
-    new_assign = pd.concat([
-        new_assign,
-        pd.DataFrame([{
-            "patient_id": u_id,
-            "room": r,
-            "day": d,
-            "shift": sh,
-            "used_min": need,
-            "surgeon_id": u_sid,
-            "iteration": new_assign["iteration"].max() + 1 if len(new_assign) else 1,
-            "W_patient": None,
-            "W_block": None
-        }])
-    ], ignore_index=True)
-
-    new_assign = new_assign.sort_values(
-        ["day", "shift", "room", "iteration"]
-    ).reset_index(drop=True)
-
+    used_by_block = assignments.groupby(["room", "day", "shift"], as_index=False).agg(used_min=("used_min", "sum"))
+    rooms_join = rooms_base.merge(used_by_block, on=["room", "day", "shift"], how="left").fillna({"used_min": 0})
     
-    return new_assign, True
-
-
-def local_search(assign_init, df_rooms, df_surgeons, patients,
-                 C_PER_SHIFT, max_no_improv=200):
-    """
-    Local search de first-improvement com duas vizinhanças discretas:
-      - N₁: move_patient  → mover 1 doente para outro bloco viável
-      - N₂: swap_patients → trocar blocos de 2 doentes
-
-    Só mexe em (room, day, shift) dos doentes.
-    """
-    current = assign_init.copy()
-
-    # avaliar solução inicial
-    feas = feasibility_metrics(current, df_rooms, df_surgeons, patients, C_PER_SHIFT)
-    best_feas = feas["feasibility_score"]
-    best_rooms_join = feas["rooms_cap_join"]
-
+    # Capacidade bloco 1
+    r1, d1, s1 = block1
+    block1_data = rooms_join[(rooms_join['room'] == r1) & 
+                             (rooms_join['day'] == d1) & 
+                             (rooms_join['shift'] == s1)]
+    if block1_data.empty:
+        return current_assignments, {}, False
+    cap_b1 = block1_data['cap_min'].iloc[0]
+    used_b1 = block1_data['used_min'].iloc[0]
     
-    best_eval = current.merge(
-        patients[["patient_id", "priority", "waiting", "duration"]],
-        on="patient_id",
-        how="left"
-    )
+    # Capacidade bloco 2
+    r2, d2, s2 = block2
+    block2_data = rooms_join[(rooms_join['room'] == r2) & 
+                             (rooms_join['day'] == d2) & 
+                             (rooms_join['shift'] == s2)]
+    if block2_data.empty:
+        return current_assignments, {}, False
+    cap_b2 = block2_data['cap_min'].iloc[0]
+    used_b2 = block2_data['used_min'].iloc[0]
     
-    best_rooms_eval = best_rooms_join.copy()
-    best_rooms_eval["utilization"] = best_rooms_eval.apply(
-        lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0,
-        axis=1
-    )
+    # Verificar se swap cabe
+    new_used_b1 = used_b1 - time_b1_out + time_b1_in
+    new_used_b2 = used_b2 - time_b2_out + time_b2_in
     
-    best_score = evaluate_schedule(
-    best_eval,
-    patients,
-    best_rooms_eval,
-    feas["excess_block_min"]
-    )["score"]
-
-    no_improv = 0
-
-    while no_improv < max_no_improv:
-        # escolher aleatoriamente o tipo de vizinho: N₁ (move) ou N₂ (swap)
-        #move_type = random.choice(["move", "swap", "swap_unassigned"])
-        move_type = "swap_with_unassigned_random"
-
-        if move_type == "move":
-            candidate, moved = move_patient(current, patients, df_rooms, df_surgeons, C_PER_SHIFT)
-        elif move_type == "swap":
-            candidate, moved = swap_patients(current, patients, df_rooms, df_surgeons, C_PER_SHIFT)
-        elif move_type == 'swap_with_unassigned':
-            candidate, moved = swap_with_unassigned(current, patients, df_rooms, df_surgeons, C_PER_SHIFT)
-        elif move_type == 'swap_with_unassigned_random':
-            candidate, moved = swap_with_unassigned_random(current, patients, df_rooms, df_surgeons, C_PER_SHIFT)
-        
-        
-        if not moved:
-            no_improv += 1
+    if new_used_b1 > cap_b1 + TOLERANCE or new_used_b2 > cap_b2 + TOLERANCE:
+        return current_assignments, {}, False
+    
+    # Aplicar swap
+    new_assign = assignments.copy()
+    
+    # Trocar pacientes de b1 para b2
+    for pid in ids_from_b1:
+        idx = new_assign[new_assign['patient_id'] == pid].index
+        if len(idx) == 0:
             continue
-        
-        
-        
-
-        feas_c = feasibility_metrics(candidate, df_rooms, df_surgeons, patients, C_PER_SHIFT)
-        rooms_join_c = feas_c["rooms_cap_join"]
-
-
-        
-        cand_eval = candidate.merge(
-        patients[["patient_id", "priority", "waiting", "duration"]],
-        on="patient_id",
-        how="left"
-    )
+        new_assign.loc[idx, ['room', 'day', 'shift']] = [r2, d2, s2]
+        # Atualizar used_min
+        p_data = df_patients[df_patients['patient_id'] == pid]
+        if not p_data.empty:
+            dur = int(p_data['duration'].iloc[0]) + CLEANUP
+            new_assign.loc[idx, 'used_min'] = dur
     
-        rooms_c_eval = rooms_join_c.copy()
-        rooms_c_eval["utilization"] = rooms_c_eval.apply(
-            lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0,
-            axis=1
-        )
-        cand_score = evaluate_schedule(
-        cand_eval,
-        patients,
-        rooms_c_eval,
-        feas_c["excess_block_min"]
-    )["score"]
-        
-            
+    # Trocar pacientes de b2 para b1
+    for pid in ids_from_b2:
+        idx = new_assign[new_assign['patient_id'] == pid].index
+        if len(idx) == 0:
+            continue
+        new_assign.loc[idx, ['room', 'day', 'shift']] = [r1, d1, s1]
+        # Atualizar used_min
+        p_data = df_patients[df_patients['patient_id'] == pid]
+        if not p_data.empty:
+            dur = int(p_data['duration'].iloc[0]) + CLEANUP
+            new_assign.loc[idx, 'used_min'] = dur
+    
+    # Remover coluna auxiliar
+    new_assign = new_assign.drop(columns=['block_key'])
+    new_assign = new_assign.sort_values(['day', 'shift', 'room', 'iteration']).reset_index(drop=True)
+    
+    swap_info = {
+        'surgeon_id': int(surgeon_id),
+        'swap_type': swap_type,
+        'block1': block1,
+        'block2': block2,
+        'from_b1': ids_from_b1,
+        'from_b2': ids_from_b2
+    }
+    
+    return new_assign, swap_info, True
 
-        if cand_score > best_score:
-            print(
-                f"✔ Aceite melhoria LS: score {best_score:.4f} → {cand_score:.4f} "
-                f"(tipo={move_type})"
-            )
-            
-            current = candidate
-            best_score = cand_score
-            best_feas = feas_c["feasibility_score"]
-            best_rooms_join = rooms_join_c
-            no_improv = 0
-        else:
-            #print(" --> não melhorou")
-            no_improv += 1
-
-    return current, best_score, best_feas
 
 def generate_neighbor_swap(current_assignments,
                            df_patients,
@@ -942,13 +680,13 @@ def generate_neighbor_swap(current_assignments,
 
         assignments = pd.concat(
             [assignments, pd.DataFrame([new_row])],
-            ignore_index=True
+            ignore_index=True,
+            sort=False
         )
 
         ids_in_effective.append(int(pid))
 
     return assignments, ids_out, ids_in_effective
-
 
 
 # ------------------------------
@@ -1086,61 +824,155 @@ score_init = evaluate_schedule(
 
 print(f"Initial score = {score_init['score']:.4f}, ")
 
+# ============================================================
+#     LOGGING INFRASTRUCTURE FOR SENSITIVITY ANALYSIS
+# ============================================================
+
+improvement_log = []
+iteration_log = []
+
+def log_iteration(fase, iteracao, metrics, accepted):
+    """
+    Regista as métricas APENAS das iterações aceites para análise de sensibilidade.
+    """
+    if accepted:  # Só regista se a solução foi aceite (melhorou)
+        iteration_log.append({
+            "fase": fase,
+            "iteracao": int(iteracao),
+            "accepted": int(bool(accepted)),
+            "score": float(metrics["score"]),
+            "n_patient": int(metrics["assigned_patients"]),
+            "scheduled_rooms_r": float(metrics["ratio_scheduled_raw"]),
+            "u_waiting_k": float(metrics["avg_waiting_raw"]),
+            "p_priority_j": float(metrics["avg_priority_raw"]),
+            "w_overdue_l": int(metrics["deadline_overdue_patients"]),
+            "f_block_m": int(metrics["excess_block_min_raw"]),
+            "surgeon_min_raw": int(metrics["excess_surgeon_min_raw"]),
+        })
 
 
+def eval_components(assignments_df, rooms_free_df, feas_dict):
+    """
+    Calcula métricas detalhadas para o iteration_log.
+    """
+    total_patients = len(df_patients)
 
-# ============================================
-# first LOCAL SEARCH em cima da solução construtiva
-# ============================================
-best_assignments, best_score, best_feas = local_search(
-    df_assignments,
-    df_rooms,
-    df_surgeons,
-    df_patients,
-    C_PER_SHIFT,
-    max_no_improv=200
-)
+    # Pacientes agendados
+    assigned_patients = int(assignments_df["patient_id"].nunique()) if len(assignments_df) else 0
+    ratio_scheduled_raw = assigned_patients / total_patients if total_patients > 0 else 0.0
 
-# ----------------------------------------------------------
-#  ILS — Iterated Local Search- seconde One
-# ----------------------------------------------------------
+    # Utilização das salas
+    util_rooms_raw = float(
+        rooms_free_df.loc[rooms_free_df["cap_min"] > 0, "utilization"].mean()
+    ) if len(rooms_free_df) else 0.0
 
-print("\n========== STARTING ILS ==========\n")
+    # Priority e Waiting médios
+    if len(assignments_df):
+        # Garantir que temos as colunas priority e waiting
+        if "priority" not in assignments_df.columns or "waiting" not in assignments_df.columns:
+            merged = assignments_df.merge(
+                df_patients[["patient_id", "priority", "waiting"]],
+                on="patient_id", how="left"
+            )
+        else:
+            merged = assignments_df
 
-# Prepara estado inicial da ILS
-current_assignments = best_assignments.copy()
+        avg_priority_raw = float(merged["priority"].mean())
+        avg_waiting_raw = float(merged["waiting"].mean())
+    else:
+        avg_priority_raw = 0.0
+        avg_waiting_raw = 0.0
 
-feas0 = feasibility_metrics(
-    current_assignments, df_rooms, df_surgeons, df_patients, C_PER_SHIFT
-)
-rooms0 = feas0["rooms_cap_join"].copy()
-rooms0["utilization"] = rooms0.apply(
-    lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0, axis=1
-)
-current_score = evaluate_schedule(
-    current_assignments.merge(
-        df_patients[["patient_id", "priority", "waiting", "duration"]],
-        on="patient_id", how="left"
-    ),
-    df_patients,
-    rooms0,
-    feas0["excess_block_min"]
-)["score"]
+    # Deadline overdues APENAS entre pacientes agendados
+    if len(assignments_df):
+        cols_needed = ["priority", "waiting"]
+        missing_cols = [c for c in cols_needed if c not in assignments_df.columns]
 
-best_score_ils = current_score
-best_assign_ils = current_assignments.copy()
-best_feas_ils = feas0
+        if missing_cols:
+            pats_assigned = assignments_df.merge(
+                df_patients[["patient_id", "priority", "waiting"]],
+                on="patient_id",
+                how="left"
+            )
+        else:
+            pats_assigned = assignments_df.copy()
 
-print(f"ILS initial score = {best_score_ils:.4f}")
+        pats_assigned["deadline_limit"] = pats_assigned["priority"].apply(deadline_limit_from_priority)
+        pats_assigned["overdue_days"] = (pats_assigned["waiting"] - pats_assigned["deadline_limit"]).clip(lower=0)
+        deadline_overdue_patients = int((pats_assigned["overdue_days"] > 0).sum())
+    else:
+        deadline_overdue_patients = 0
 
-# parâmetros ILS
-N_ILS_ITER = 30
+    # Excessos de bloco e cirurgião
+    excess_block_min_raw = int(feas_dict["excess_block_min"])
+    excess_surgeon_min_raw = int(feas_dict["excess_surgeon_min"])
+
+    # Avaliação do score
+    ev = evaluate_schedule(
+        assignments=assignments_df,
+        patients=df_patients,
+        rooms_free=rooms_free_df,
+        excess_block_min=feas_dict["excess_block_min"]
+    )
+
+    return {
+        "score": float(ev["score"]),
+        "assigned_patients": assigned_patients,
+        "ratio_scheduled_raw": ratio_scheduled_raw,
+        "util_rooms_raw": util_rooms_raw,
+        "avg_waiting_raw": avg_waiting_raw,
+        "avg_priority_raw": avg_priority_raw,
+        "deadline_overdue_patients": deadline_overdue_patients,
+        "excess_block_min_raw": excess_block_min_raw,
+        "excess_surgeon_min_raw": excess_surgeon_min_raw,
+    }
+
+
+# =========================================================
+#       LS #1: SWAP i-j
+# =========================================================
+
+N_ILS_ITER = 100
 MAX_SWAP_OUT = 2
 MAX_SWAP_IN  = 2
 
-for it in range(N_ILS_ITER):
+# ponto de partida: solução construtiva
+current_assignments = df_assignments.copy()
 
-    neighbor, removed, added = generate_neighbor_swap(
+# avaliação inicial
+feas_init = feasibility_metrics(current_assignments, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
+rooms_init = feas_init["rooms_cap_join"].copy()
+rooms_init["utilization"] = rooms_init.apply(
+    lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0,
+    axis=1
+)
+assign_init = current_assignments.merge(
+    df_patients[["patient_id", "priority", "waiting", "duration"]],
+    on="patient_id",
+    how="left"
+)
+current_score = evaluate_schedule(
+    assign_init,
+    df_patients,
+    rooms_init,
+    feas_init["excess_block_min"]
+)["score"]
+
+best_score = current_score
+best_assignments = current_assignments.copy()
+best_rooms_free = rooms_init.copy()
+best_feas = feas_init
+
+print("\n========== LS #1: SWAP i-j ==========")
+print(f"Initial score: {current_score:.4f}")
+
+max_iter_without_improvement = 500
+iter_without_improvement = 0
+it = 0
+
+while iter_without_improvement < max_iter_without_improvement:
+    # -------- 1) MOVE --------
+    neighbor_struct, ids_out, ids_in = generate_neighbor_swap(
         current_assignments,
         df_patients,
         df_rooms,
@@ -1150,44 +982,261 @@ for it in range(N_ILS_ITER):
         max_swap_in=MAX_SWAP_IN
     )
 
-    # Avaliar vizinho
-    feas_n = feasibility_metrics(
-        neighbor, df_rooms, df_surgeons, df_patients, C_PER_SHIFT
-    )
+    # -------- 2) AVALIAÇÃO --------
+    feas_n = feasibility_metrics(neighbor_struct, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
     rooms_n = feas_n["rooms_cap_join"].copy()
     rooms_n["utilization"] = rooms_n.apply(
         lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0,
         axis=1
     )
+    neighbor_enriched = neighbor_struct.merge(
+        df_patients[["patient_id", "priority", "waiting", "duration"]],
+        on="patient_id",
+        how="left"
+    )
     neigh_score = evaluate_schedule(
-        neighbor.merge(
-            df_patients[["patient_id", "priority", "waiting", "duration"]],
-            on="patient_id", how="left"
-        ),
+        neighbor_enriched,
         df_patients,
         rooms_n,
         feas_n["excess_block_min"]
     )["score"]
 
-    # Aceitação first-improvement
+    # Log da iteração
+    new_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
+    log_iteration("LS1_SWAP", it, new_metrics, accepted=(neigh_score > current_score))
+
+    if neigh_score > current_score:
+        current_assignments = neighbor_struct.copy()
+        current_score = neigh_score
+        iter_without_improvement = 0  # Reset contador
+
+        if neigh_score > best_score:
+            best_score = neigh_score
+            best_assignments = neighbor_struct.copy()
+            best_rooms_free = rooms_n.copy()
+            best_feas = feas_n
+            print(f"[LS1 Iter {it}] Improved to {neigh_score:.4f} | removed={ids_out} | added={ids_in}")
+    else:
+        iter_without_improvement += 1
+    
+    it += 1
+
+print(f"\nLS #1 final score = {best_score:.4f}")
+
+# ============================================================
+#     LS #2 — INTRA-SURGEON SWAP
+# ============================================================
+
+print("\n========== LS #2: INTRA-SURGEON SWAP ==========")
+
+current_assignments = best_assignments.copy()
+current_score = best_score
+
+N_LS2_ITER = 100
+
+print(f"Initial score: {current_score:.4f}")
+
+max_iter_without_improvement = 500
+iter_without_improvement = 0
+it = 0
+
+while iter_without_improvement < max_iter_without_improvement:
+    neighbor, swap_info, success = generate_neighbor_intra_surgeon_swap(
+        current_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT
+    )
+    
+    if not success:
+        continue
+    
+    # ---- avaliação ----
+    feas_n = feasibility_metrics(neighbor, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
+    rooms_n = feas_n["rooms_cap_join"].copy()
+    rooms_n["utilization"] = rooms_n.apply(
+        lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0,
+        axis=1
+    )
+    neighbor_enriched = neighbor.merge(
+        df_patients[["patient_id", "priority", "waiting", "duration"]],
+        on="patient_id",
+        how="left"
+    )
+    neigh_score = evaluate_schedule(
+        neighbor_enriched,
+        df_patients,
+        rooms_n,
+        feas_n["excess_block_min"]
+    )["score"]
+    
+    # Log da iteração LS2
+    new_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
+    log_iteration("LS2_INTRA_SURGEON_SWAP", it, new_metrics, accepted=(neigh_score > current_score))
+    
     if neigh_score > current_score:
         current_assignments = neighbor.copy()
         current_score = neigh_score
+        iter_without_improvement = 0  # Reset contador
+        
+        if neigh_score > best_score:
+            best_score = neigh_score
+            best_assignments = neighbor.copy()
+            best_rooms_free = rooms_n.copy()
+            best_feas = feas_n
+            print(f"[LS2 Iter {it}] Improved to {current_score:.4f} | "
+                  f"surgeon={swap_info['surgeon_id']}, type={swap_info['swap_type']}")
+    else:
+        iter_without_improvement += 1
+    
+    it += 1
 
-        print(f"[ILS iter {it}] improved to {neigh_score:.4f} | removed={removed} | added={added}")
+print(f"\nLS #2 final score = {best_score:.4f}")
 
-        if neigh_score > best_score_ils:
-            best_assign_ils = neighbor.copy()
-            best_score_ils = neigh_score
-            best_feas_ils = feas_n
+# ============================================================
+#     LS #3 — ADD-ONLY
+# ============================================================
 
-# Substituir solução final pelo melhor da ILS
-best_assignments = best_assign_ils.copy()
-best_score = best_score_ils
-best_feas = best_feas_ils
+print("\n========== LS #3: ADD-ONLY ==========")
 
-print("\n========== END OF ILS ==========")
-print(f"Final ILS score = {best_score_ils:.4f}, feasibility = {best_feas_ils['feasibility_score']}")
+current_assignments = best_assignments.copy()
+current_score = best_score
+
+N_LS3_ITER = 50
+
+print(f"Initial add-only score: {current_score:.4f}")
+
+max_iter_without_improvement = 500
+iter_without_improvement = 0
+it = 0
+
+while iter_without_improvement < max_iter_without_improvement:
+    neighbor, ids_added = generate_neighbor_add_only(
+        current_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT, max_add=2
+    )
+    
+    # Se não conseguiu adicionar nenhum paciente, não há mais vizinhos viáveis
+    if not ids_added:
+        print(f"[LS3] No more patients can be added. Stopping after {it} iterations.")
+        break
+
+    # ---- avaliação ----
+    feas_n = feasibility_metrics(neighbor, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
+    rooms_n = feas_n["rooms_cap_join"].copy()
+    rooms_n["utilization"] = rooms_n.apply(
+        lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0,
+        axis=1
+    )
+    neighbor_enriched = neighbor.merge(
+        df_patients[["patient_id", "priority", "waiting", "duration"]],
+        on="patient_id",
+        how="left"
+    )
+    neigh_score = evaluate_schedule(
+        neighbor_enriched,
+        df_patients,
+        rooms_n,
+        feas_n["excess_block_min"]
+    )["score"]
+
+    # Log da iteração LS3
+    new_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
+    log_iteration("LS3_ADD_ONLY", it, new_metrics, accepted=(neigh_score > current_score))
+
+    if neigh_score > current_score:
+        current_assignments = neighbor.copy()
+        current_score = neigh_score
+        iter_without_improvement = 0  # Reset contador
+
+        if neigh_score > best_score:
+            best_score = neigh_score
+            best_assignments = neighbor.copy()
+            best_rooms_free = rooms_n.copy()
+            best_feas = feas_n
+            print(f"[LS3 Iter {it}] Improved score to {current_score:.4f} | added={ids_added}")
+    else:
+        iter_without_improvement += 1
+    
+    it += 1
+
+print(f"\nLS #3 final score = {best_score:.4f}\n")
+
+# ----------------------------------------------------------
+#  ILS — Iterated Local Search (DESATIVADO)
+# ----------------------------------------------------------
+# (comentado - não usar por agora)
+# print("\n========== STARTING ILS ==========\n")
+# current_assignments = best_assignments.copy()
+# feas0 = feasibility_metrics(
+#     current_assignments, df_rooms, df_surgeons, df_patients, C_PER_SHIFT
+# )
+# rooms0 = feas0["rooms_cap_join"].copy()
+# rooms0["utilization"] = rooms0.apply(
+#     lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0, axis=1
+# )
+# current_score = evaluate_schedule(
+#     current_assignments.merge(
+#         df_patients[["patient_id", "priority", "waiting", "duration"]],
+#         on="patient_id", how="left"
+#     ),
+#     df_patients,
+#     rooms0,
+#     feas0["excess_block_min"]
+# )["score"]
+# 
+# best_score_ils = current_score
+# best_assign_ils = current_assignments.copy()
+# best_feas_ils = feas0
+# 
+# print(f"ILS initial score = {best_score_ils:.4f}")
+# 
+# N_ILS_ITER = 30
+# MAX_SWAP_OUT = 2
+# MAX_SWAP_IN  = 2
+# 
+# for it in range(N_ILS_ITER):
+#     neighbor, removed, added = generate_neighbor_swap(
+#         current_assignments,
+#         df_patients,
+#         df_rooms,
+#         df_surgeons,
+#         C_PER_SHIFT,
+#         max_swap_out=MAX_SWAP_OUT,
+#         max_swap_in=MAX_SWAP_IN
+#     )
+# 
+#     feas_n = feasibility_metrics(
+#         neighbor, df_rooms, df_surgeons, df_patients, C_PER_SHIFT
+#     )
+#     rooms_n = feas_n["rooms_cap_join"].copy()
+#     rooms_n["utilization"] = rooms_n.apply(
+#         lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0,
+#         axis=1
+#     )
+#     neigh_score = evaluate_schedule(
+#         neighbor.merge(
+#             df_patients[["patient_id", "priority", "waiting", "duration"]],
+#             on="patient_id", how="left"
+#         ),
+#         df_patients,
+#         rooms_n,
+#         feas_n["excess_block_min"]
+#     )["score"]
+# 
+#     if neigh_score > current_score:
+#         current_assignments = neighbor.copy()
+#         current_score = neigh_score
+# 
+#         print(f"[ILS iter {it}] improved to {neigh_score:.4f} | removed={removed} | added={added}")
+# 
+#         if neigh_score > best_score_ils:
+#             best_assign_ils = neighbor.copy()
+#             best_score_ils = neigh_score
+#             best_feas_ils = feas_n
+# 
+# best_assignments = best_assign_ils.copy()
+# best_score = best_score_ils
+# best_feas = best_feas_ils
+# 
+# print("\n========== END OF ILS ==========")
+# print(f"Final ILS score = {best_score_ils:.4f}, feasibility = {best_feas_ils['feasibility_score']}")
 
 
 # garantir que as chaves são int
@@ -1261,7 +1310,6 @@ df_room_free = df_room_free.sort_values(["room", "day", "shift"]).reset_index(dr
 # ============================================================
 # EXPORT PACK — build all relevant tables and write to Excel
 # ============================================================
-import pandas as pd
 from datetime import datetime
 
 # ---------- 0) helpers ----------
@@ -1428,6 +1476,13 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
 
     # Unassigned (if any)
     unassigned_patients.to_excel(writer, sheet_name="Unassigned", index=False)
+    
+    # ======== ITERATIONS LOG (todas as iterações para análise de sensibilidade) ========
+    if iteration_log:
+        df_iter_log = pd.DataFrame(iteration_log).sort_values(["fase", "iteracao"])
+    else:
+        df_iter_log = pd.DataFrame([{"info": "Sem iterações registadas"}])
+    df_iter_log.to_excel(writer, sheet_name="Iterations_Log", index=False)
 
 print(f"\nExcel exported → {xlsx_path}")
 print(f"Initial score = {score_init['score']:.4f}, feasibility_score = {feas_init['feasibility_score']}")
