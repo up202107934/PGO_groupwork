@@ -17,7 +17,7 @@ warnings.filterwarnings("ignore")
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "instance_c1_30.dat"
+DATA_FILE = "Instance_C1_30.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time
@@ -277,7 +277,7 @@ def evaluate_schedule(assignments, patients, rooms_free, excess_block_min,
 
         # esperar mais = score maior (normalizado)
         if wmax > 0:
-            norm_wait_term = 1.0 - (float(merged["waiting"].mean()) / wmax)
+            norm_wait_term =  (float(merged["waiting"].mean()) / wmax)
         else:
             norm_wait_term = 1.0
 
@@ -291,9 +291,9 @@ def evaluate_schedule(assignments, patients, rooms_free, excess_block_min,
     score = (
         w1 * ratio_scheduled +
         w2 * util_rooms +
-        w3 * prio_rate +
-        w4 * norm_wait_term -
-        0.001 * excess_block_min
+        w3 * prio_rate #+
+        #w4 * norm_wait_term -
+        - 0.001 * excess_block_min
     )
 
     return {
@@ -829,7 +829,8 @@ print(f"Initial score = {score_init['score']:.4f}, ")
 # ============================================================
 
 improvement_log = []
-iteration_log = []
+iteration_log = []  # Para LS1, LS2, LS3
+ils_log = []  # Para ILS/VNS
 
 def log_iteration(fase, iteracao, metrics, accepted):
     """
@@ -849,6 +850,24 @@ def log_iteration(fase, iteracao, metrics, accepted):
             "f_block_m": int(metrics["excess_block_min_raw"]),
             "surgeon_min_raw": int(metrics["excess_surgeon_min_raw"]),
         })
+
+
+def log_ils_iteration(fase, iteracao, metrics):
+    """
+    Regista as métricas do ILS/VNS quando encontra novo ótimo local.
+    """
+    ils_log.append({
+        "fase": fase,
+        "iteracao": int(iteracao),
+        "score": float(metrics["score"]),
+        "n_patient": int(metrics["assigned_patients"]),
+        "scheduled_rooms_r": float(metrics["ratio_scheduled_raw"]),
+        "u_waiting_k": float(metrics["avg_waiting_raw"]),
+        "p_priority_j": float(metrics["avg_priority_raw"]),
+        "w_overdue_l": int(metrics["deadline_overdue_patients"]),
+        "f_block_m": int(metrics["excess_block_min_raw"]),
+        "surgeon_min_raw": int(metrics["excess_surgeon_min_raw"]),
+    })
 
 
 def eval_components(assignments_df, rooms_free_df, feas_dict):
@@ -1099,7 +1118,7 @@ print("\n========== LS #3: ADD-ONLY ==========")
 current_assignments = best_assignments.copy()
 current_score = best_score
 
-N_LS3_ITER = 50
+N_LS3_ITER = 500
 
 print(f"Initial add-only score: {current_score:.4f}")
 
@@ -1158,85 +1177,410 @@ while iter_without_improvement < max_iter_without_improvement:
 
 print(f"\nLS #3 final score = {best_score:.4f}\n")
 
-# ----------------------------------------------------------
-#  ILS — Iterated Local Search (DESATIVADO)
-# ----------------------------------------------------------
-# (comentado - não usar por agora)
-# print("\n========== STARTING ILS ==========\n")
-# current_assignments = best_assignments.copy()
-# feas0 = feasibility_metrics(
-#     current_assignments, df_rooms, df_surgeons, df_patients, C_PER_SHIFT
-# )
-# rooms0 = feas0["rooms_cap_join"].copy()
-# rooms0["utilization"] = rooms0.apply(
-#     lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0, axis=1
-# )
-# current_score = evaluate_schedule(
-#     current_assignments.merge(
-#         df_patients[["patient_id", "priority", "waiting", "duration"]],
-#         on="patient_id", how="left"
-#     ),
-#     df_patients,
-#     rooms0,
-#     feas0["excess_block_min"]
-# )["score"]
-# 
-# best_score_ils = current_score
-# best_assign_ils = current_assignments.copy()
-# best_feas_ils = feas0
-# 
-# print(f"ILS initial score = {best_score_ils:.4f}")
-# 
-# N_ILS_ITER = 30
-# MAX_SWAP_OUT = 2
-# MAX_SWAP_IN  = 2
-# 
-# for it in range(N_ILS_ITER):
-#     neighbor, removed, added = generate_neighbor_swap(
-#         current_assignments,
-#         df_patients,
-#         df_rooms,
-#         df_surgeons,
-#         C_PER_SHIFT,
-#         max_swap_out=MAX_SWAP_OUT,
-#         max_swap_in=MAX_SWAP_IN
-#     )
-# 
-#     feas_n = feasibility_metrics(
-#         neighbor, df_rooms, df_surgeons, df_patients, C_PER_SHIFT
-#     )
-#     rooms_n = feas_n["rooms_cap_join"].copy()
-#     rooms_n["utilization"] = rooms_n.apply(
-#         lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0,
-#         axis=1
-#     )
-#     neigh_score = evaluate_schedule(
-#         neighbor.merge(
-#             df_patients[["patient_id", "priority", "waiting", "duration"]],
-#             on="patient_id", how="left"
-#         ),
-#         df_patients,
-#         rooms_n,
-#         feas_n["excess_block_min"]
-#     )["score"]
-# 
-#     if neigh_score > current_score:
-#         current_assignments = neighbor.copy()
-#         current_score = neigh_score
-# 
-#         print(f"[ILS iter {it}] improved to {neigh_score:.4f} | removed={removed} | added={added}")
-# 
-#         if neigh_score > best_score_ils:
-#             best_assign_ils = neighbor.copy()
-#             best_score_ils = neigh_score
-#             best_feas_ils = feas_n
-# 
-# best_assignments = best_assign_ils.copy()
-# best_score = best_score_ils
-# best_feas = best_feas_ils
-# 
-# print("\n========== END OF ILS ==========")
-# print(f"Final ILS score = {best_score_ils:.4f}, feasibility = {best_feas_ils['feasibility_score']}")
+# ============================================================
+#     ILS/VNS — Iterated Local Search com Variable Neighborhood
+# ============================================================
+import time
+
+def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons, 
+                           C_PER_SHIFT, max_iter_no_improve=200, verbose=False, 
+                           shaking_info=None):
+    """
+    Executa as 3 fases de Local Search (SWAP, INTRA-SURGEON, ADD-ONLY)
+    a partir de uma solução inicial. Retorna a melhor solução encontrada.
+    """
+    current_assignments = start_assignments.copy()
+    
+    # Avaliação inicial
+    feas = feasibility_metrics(current_assignments, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
+    rooms_eval = feas["rooms_cap_join"].copy()
+    rooms_eval["utilization"] = rooms_eval.apply(
+        lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0, axis=1
+    )
+    assign_eval = current_assignments.merge(
+        df_patients[["patient_id", "priority", "waiting", "duration"]],
+        on="patient_id", how="left"
+    )
+    current_score = evaluate_schedule(assign_eval, df_patients, rooms_eval, feas["excess_block_min"])["score"]
+    
+    best_ls_score = current_score
+    best_ls_assignments = current_assignments.copy()
+    best_ls_feas = feas
+    best_ls_rooms = rooms_eval.copy()
+    
+    if verbose and shaking_info:
+        print(f"\n      [ILS Iter {shaking_info['iteration']}] {shaking_info['name']}")
+        print(f"      → Shaking score: {current_score:.4f} (removed={shaking_info['removed']}, added={shaking_info['added']})")
+    elif verbose:
+        print(f"      → Shaking score: {current_score:.4f}")
+    
+    # --- LS Phase 1: ADD-ONLY ---
+    if verbose:
+        print(f"\n      ========== LS #1: ADD-ONLY ==========")
+        print(f"      Initial add-only score: {current_score:.4f}")
+    
+    iter_no_improve = 0
+    ls1_iter = 0
+    while iter_no_improve < max_iter_no_improve:
+        ls1_iter += 1
+        neighbor, ids_added = generate_neighbor_add_only(
+            current_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT, max_add=2
+        )
+        if not ids_added:
+            if verbose:
+                print(f"      [LS1] No more patients can be added. Stopping after {ls1_iter-1} iterations.")
+            break
+        feas_n = feasibility_metrics(neighbor, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
+        rooms_n = feas_n["rooms_cap_join"].copy()
+        rooms_n["utilization"] = rooms_n.apply(
+            lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0, axis=1
+        )
+        neighbor_enriched = neighbor.merge(
+            df_patients[["patient_id", "priority", "waiting", "duration"]],
+            on="patient_id", how="left"
+        )
+        neigh_score = evaluate_schedule(neighbor_enriched, df_patients, rooms_n, feas_n["excess_block_min"])["score"]
+        
+        if neigh_score > current_score:
+            current_assignments = neighbor.copy()
+            current_score = neigh_score
+            iter_no_improve = 0
+            
+            if verbose:
+                print(f"      [LS1 Iter {ls1_iter}] Improved score to {neigh_score:.4f} | added={ids_added}")
+            
+            if neigh_score > best_ls_score:
+                best_ls_score = neigh_score
+                best_ls_assignments = neighbor.copy()
+                best_ls_feas = feas_n
+                best_ls_rooms = rooms_n.copy()
+        else:
+            iter_no_improve += 1
+    
+    if verbose:
+        print(f"\n      LS #1 final score = {best_ls_score:.4f}")
+    
+    # --- LS Phase 2: INTRA-SURGEON SWAP ---
+    if verbose:
+        print(f"\n      ========== LS #2: INTRA-SURGEON SWAP ==========")
+        print(f"      Initial score: {best_ls_score:.4f}")
+    
+    current_assignments = best_ls_assignments.copy()
+    current_score = best_ls_score
+    iter_no_improve = 0
+    ls2_iter = 0
+    while iter_no_improve < max_iter_no_improve:
+        ls2_iter += 1
+        neighbor, swap_info, success = generate_neighbor_intra_surgeon_swap(
+            current_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT
+        )
+        if not success:
+            iter_no_improve += 1
+            continue
+        feas_n = feasibility_metrics(neighbor, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
+        rooms_n = feas_n["rooms_cap_join"].copy()
+        rooms_n["utilization"] = rooms_n.apply(
+            lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0, axis=1
+        )
+        neighbor_enriched = neighbor.merge(
+            df_patients[["patient_id", "priority", "waiting", "duration"]],
+            on="patient_id", how="left"
+        )
+        neigh_score = evaluate_schedule(neighbor_enriched, df_patients, rooms_n, feas_n["excess_block_min"])["score"]
+        
+        if neigh_score > current_score:
+            current_assignments = neighbor.copy()
+            current_score = neigh_score
+            iter_no_improve = 0
+            
+            if verbose:
+                print(f"      [LS2 Iter {ls2_iter}] Improved to {neigh_score:.4f} | "
+                      f"surgeon={swap_info['surgeon_id']}, type={swap_info['swap_type']}")
+            
+            if neigh_score > best_ls_score:
+                best_ls_score = neigh_score
+                best_ls_assignments = neighbor.copy()
+                best_ls_feas = feas_n
+                best_ls_rooms = rooms_n.copy()
+        else:
+            iter_no_improve += 1
+    
+    if verbose:
+        print(f"\n      LS #2 final score = {best_ls_score:.4f}")
+    
+    # --- LS Phase 3: SWAP i-j ---
+    if verbose:
+        print(f"\n      ========== LS #3: SWAP i-j ==========")
+        print(f"      Initial score: {best_ls_score:.4f}")
+    
+    current_assignments = best_ls_assignments.copy()
+    current_score = best_ls_score
+    iter_no_improve = 0
+    ls3_iter = 0
+    while iter_no_improve < max_iter_no_improve:
+        ls3_iter += 1
+        neighbor, ids_out, ids_in = generate_neighbor_swap(
+            current_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT,
+            max_swap_out=2, max_swap_in=2
+        )
+        feas_n = feasibility_metrics(neighbor, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
+        rooms_n = feas_n["rooms_cap_join"].copy()
+        rooms_n["utilization"] = rooms_n.apply(
+            lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0, axis=1
+        )
+        neighbor_enriched = neighbor.merge(
+            df_patients[["patient_id", "priority", "waiting", "duration"]],
+            on="patient_id", how="left"
+        )
+        neigh_score = evaluate_schedule(neighbor_enriched, df_patients, rooms_n, feas_n["excess_block_min"])["score"]
+        
+        if neigh_score > current_score:
+            current_assignments = neighbor.copy()
+            current_score = neigh_score
+            iter_no_improve = 0
+            
+            if verbose:
+                print(f"      [LS3 Iter {ls3_iter}] Improved to {neigh_score:.4f} | removed={ids_out} | added={ids_in}")
+            
+            if neigh_score > best_ls_score:
+                best_ls_score = neigh_score
+                best_ls_assignments = neighbor.copy()
+                best_ls_feas = feas_n
+                best_ls_rooms = rooms_n.copy()
+        else:
+            iter_no_improve += 1
+    
+    if verbose:
+        print(f"\n      LS #3 final score = {best_ls_score:.4f}")
+    
+    return best_ls_assignments, best_ls_score, best_ls_feas, best_ls_rooms
+
+
+def shaking(assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT,
+            min_out, max_out, min_in, max_in):
+    """
+    Perturbação da solução: remove entre min_out e max_out pacientes,
+    tenta inserir entre min_in e max_in pacientes não agendados.
+    Retorna (result, ids_out, ids_in_effective, success)
+    """
+    result = assignments.copy()
+    
+    # Número de remoções e inserções
+    scheduled_ids = result["patient_id"].unique().tolist()
+    all_ids = df_patients["patient_id"].unique().tolist()
+    unassigned_ids = [pid for pid in all_ids if pid not in scheduled_ids]
+    
+    # Verificar se há pacientes suficientes para o shaking
+    if len(scheduled_ids) < min_out:
+        # Não há pacientes agendados suficientes para remover
+        return assignments, [], [], False
+    
+    # Determinar quantos remover (entre min_out e max_out, limitado aos disponíveis)
+    k_out = random.randint(min_out, min(max_out, len(scheduled_ids)))
+    
+    # Remover k_out pacientes aleatórios
+    ids_out = random.sample(scheduled_ids, k_out)
+    result = result[~result["patient_id"].isin(ids_out)].copy()
+    
+    # Determinar quantos inserir (flexível: se não há suficientes, insere o que for possível)
+    if len(unassigned_ids) == 0:
+        # Não há pacientes não agendados - shaking só remove
+        return result, ids_out, [], True
+    
+    k_in = random.randint(min(min_in, len(unassigned_ids)), min(max_in, len(unassigned_ids)))
+    
+    # Tentar inserir k_in pacientes
+    ids_in_effective = []
+    random.shuffle(unassigned_ids)
+    candidates_in = unassigned_ids[:k_in]
+    
+    for pid in candidates_in:
+        prow = df_patients[df_patients["patient_id"] == pid]
+        if prow.empty:
+            continue
+        prow = prow.iloc[0]
+        
+        cand_blocks = candidate_blocks_for_patient_in_solution(
+            result, prow, df_rooms, df_surgeons, C_PER_SHIFT
+        )
+        
+        if len(cand_blocks) == 0:
+            continue
+        
+        chosen = cand_blocks.sort_values(["day", "shift", "room"]).iloc[0]
+        need = int(prow["duration"]) + CLEANUP
+        
+        new_row = {
+            "patient_id": int(pid),
+            "room": int(chosen["room"]),
+            "day": int(chosen["day"]),
+            "shift": int(chosen["shift"]),
+            "used_min": need,
+            "surgeon_id": int(prow["surgeon_id"]),
+            "iteration": -1,
+            "W_patient": None,
+            "W_block": None,
+        }
+        
+        result = pd.concat([result, pd.DataFrame([new_row])], ignore_index=True)
+        ids_in_effective.append(int(pid))
+    
+    return result, ids_out, ids_in_effective, True
+
+
+# ============================================================
+#     MAIN ILS/VNS LOOP (5 minutos)
+# ============================================================
+
+print("\n" + "="*60)
+print("     ILS/VNS — Iterated Local Search com Shaking")
+print("="*60)
+
+ILS_TIME_LIMIT = 10 * 60  # 10 minutos em segundos
+LS_MAX_ITER_NO_IMPROVE = 500  # iterações sem melhoria por fase do LS (reduzido para permitir mais iterações ILS)
+
+# Ponto de partida: melhor solução do LS inicial
+incumbent_assignments = best_assignments.copy()
+incumbent_score = best_score
+incumbent_feas = best_feas
+incumbent_rooms = best_rooms_free.copy()
+
+# Melhor global
+global_best_assignments = incumbent_assignments.copy()
+global_best_score = incumbent_score
+global_best_feas = incumbent_feas
+global_best_rooms = incumbent_rooms.copy()
+
+print(f"ILS starting score: {incumbent_score:.4f}")
+print(f"Time limit: {ILS_TIME_LIMIT // 60} minutes")
+print(f"LS max iterations without improvement: {LS_MAX_ITER_NO_IMPROVE}")
+
+start_time = time.time()
+# Continuar numeração das iterações do LS inicial
+ils_iteration_counter = len(iteration_log) if iteration_log else 0
+shaking_level = 1  # Começa no Shaking 1
+
+# Contadores para estatísticas
+shaking1_count = 0
+shaking2_count = 0
+improvements_count = 0
+ils_iter = 0  # contador interno do ILS
+
+while (time.time() - start_time) < ILS_TIME_LIMIT:
+    ils_iter += 1
+    ils_iteration_counter += 1
+    elapsed = time.time() - start_time
+    
+    # ========== SHAKING (sempre no INCUMBENT - teoria VNS) ==========
+    if shaking_level == 1:
+        # Shaking 1: swap i-j com i=1-5, j=1-5
+        shaking1_count += 1
+        shaken_sol, ids_out, ids_in, success = shaking(
+            incumbent_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT,
+            min_out=2, max_out=5, min_in=2, max_in=5
+        )
+        shaking_name = "SHAKING_1"
+    else:
+        # Shaking 2: swap i-j com i=1-8, j=1-8 (mínimo 1)
+        shaking2_count += 1
+        shaken_sol, ids_out, ids_in, success = shaking(
+            incumbent_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT,
+            min_out=6, max_out=8, min_in=6, max_in=8
+        )
+        shaking_name = "SHAKING_2"
+    
+    # Verificar se o shaking foi bem-sucedido
+    if not success:
+        print(f"\n[ILS Iter {ils_iter}] {shaking_name} FALHOU: não há pacientes suficientes.")
+        print(f"Aceitando a melhor solução encontrada até agora.")
+        print(f"Best score: {global_best_score:.4f}")
+        break
+    
+    # ========== LOCAL SEARCH (sempre executado) ==========
+    # Calcular shaking score antes do LS
+    feas_shaken = feasibility_metrics(shaken_sol, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
+    rooms_shaken = feas_shaken["rooms_cap_join"].copy()
+    rooms_shaken["utilization"] = rooms_shaken.apply(
+        lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0, axis=1
+    )
+    assign_shaken = shaken_sol.merge(
+        df_patients[["patient_id", "priority", "waiting", "duration"]],
+        on="patient_id", how="left"
+    )
+    shaking_score = evaluate_schedule(assign_shaken, df_patients, rooms_shaken, feas_shaken["excess_block_min"])["score"]
+    
+    ls_result, ls_score, ls_feas, ls_rooms = run_local_search_phase(
+        shaken_sol, df_patients, df_rooms, df_surgeons, C_PER_SHIFT,
+        max_iter_no_improve=LS_MAX_ITER_NO_IMPROVE, verbose=False,
+        shaking_info={'name': shaking_name, 'iteration': ils_iter, 'removed': ids_out, 'added': ids_in}
+    )
+    
+    # ========== ACCEPTANCE CRITERION ==========
+    if ls_score > incumbent_score:
+        # MELHORIA: aceita e atualiza incumbent
+        improvements_count += 1
+        
+        # Print quando há melhoria
+        print(f"\n[ILS Iter {ils_iter:4d}] {shaking_name}")
+        print(f"  → Shaking score: {shaking_score:.4f} (removed={len(ids_out)}, added={len(ids_in)})")
+        print(f"  → After LS: {ls_score:.4f} ✓ IMPROVED (+{ls_score-incumbent_score:.4f}) | elapsed={elapsed:.1f}s")
+        
+        # Atualiza incumbent
+        incumbent_assignments = ls_result.copy()
+        incumbent_score = ls_score
+        incumbent_feas = ls_feas
+        incumbent_rooms = ls_rooms.copy()
+        
+        # Atualizar melhor global
+        if ls_score > global_best_score:
+            global_best_score = ls_score
+            global_best_assignments = ls_result.copy()
+            global_best_feas = ls_feas
+            global_best_rooms = ls_rooms.copy()
+        
+        # VNS: volta ao Shaking 1 quando melhora
+        shaking_level = 1
+        
+        # Log para análise de sensibilidade
+        ls_enriched = ls_result.merge(
+            df_patients[["patient_id", "priority", "waiting", "duration"]],
+            on="patient_id", how="left"
+        )
+        new_metrics = eval_components(ls_enriched, ls_rooms, ls_feas)
+        log_ils_iteration(f"ILS_{shaking_name}", ils_iteration_counter, new_metrics)
+        
+    else:
+        # SEM MELHORIA: avança na hierarquia VNS
+        if shaking_level == 1:
+            shaking_level = 2
+        else:
+            # Já estava no nível 2, volta ao 1
+            shaking_level = 1
+        
+        # Log periódico (a cada 20 iterações)
+        if ils_iter % 20 == 0:
+            print(f"[ILS Iter {ils_iter:4d}] {shaking_name} → no improvement (score={ls_score:.4f}) | "
+                  f"incumbent={incumbent_score:.4f} | next_level={shaking_level} | elapsed={elapsed:.1f}s")
+
+# Fim do tempo
+elapsed_total = time.time() - start_time
+print("\n" + "="*60)
+print("     ILS/VNS COMPLETED")
+print("="*60)
+print(f"Total time: {elapsed_total:.1f}s ({elapsed_total/60:.2f} min)")
+print(f"Total ILS iterations: {ils_iter}")
+print(f"Shaking 1 executions: {shaking1_count}")
+print(f"Shaking 2 executions: {shaking2_count}")
+print(f"Total improvements: {improvements_count}")
+print(f"Improvement rate: {(improvements_count / ils_iter * 100):.1f}%")
+print(f"Initial score (after LS): {best_score:.4f}")
+print(f"Final ILS score: {global_best_score:.4f}")
+print(f"Improvement: {((global_best_score - best_score) / best_score * 100):.2f}%")
+
+# Atualizar best_assignments e best_score para o export final
+best_assignments = global_best_assignments.copy()
+best_score = global_best_score
+# best_feas e best_rooms_free serão recalculados mais à frente a partir de best_assignments
 
 
 # garantir que as chaves são int
@@ -1351,24 +1695,42 @@ assignments_enriched["seq_in_block"] = (
 
 
 # ---------- 3) Capacity snapshots (final) ----------
-# Rooms: free/used/utilization after the loop
-rooms_free = df_capacity[["room", "day", "shift", "available", "free_min"]].copy()
-rooms_free["cap_min"] = rooms_free["available"] * C_PER_SHIFT
-rooms_free["used_min"] = (rooms_free["cap_min"] - rooms_free["free_min"]).clip(lower=0)
+# RECALCULAR rooms_free, surgeons_free e feasibility a partir do best_assignments final
+# (não usar df_capacity que ficou desatualizado após ILS/VNS)
+
+# Recalcular feasibility metrics a partir do best_assignments final
+best_feas = feasibility_metrics(best_assignments, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
+
+# Rooms: recalcular usado por bloco a partir de best_assignments
+rooms_base = df_rooms[["room", "day", "shift", "available"]].copy()
+rooms_base["cap_min"] = rooms_base["available"] * C_PER_SHIFT
+
+if len(best_assignments):
+    used_by_block = (best_assignments.groupby(["room", "day", "shift"], as_index=False)
+                     .agg(used_min=("used_min", "sum")))
+else:
+    used_by_block = rooms_base[["room", "day", "shift"]].copy()
+    used_by_block["used_min"] = 0
+
+rooms_free = rooms_base.merge(used_by_block, on=["room", "day", "shift"], how="left").fillna({"used_min": 0})
+rooms_free["free_min"] = (rooms_free["cap_min"] - rooms_free["used_min"]).clip(lower=0)
 rooms_free["utilization"] = rooms_free.apply(
     lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0.0, axis=1
 )
 rooms_free = rooms_free.sort_values(["room", "day", "shift"]).reset_index(drop=True)
 
-# Surgeons: remaining capacity by day/shift
-surgeons_free = (
-    df_surgeons[["surgeon_id", "day", "shift", "available"]]
-    .drop_duplicates()
-    .merge(df_surgeon_load[["surgeon_id", "day", "shift", "used_min"]],
-           on=["surgeon_id", "day", "shift"], how="left")
-    .fillna({"used_min": 0})
-)
-surgeons_free["cap_min"]  = surgeons_free["available"] * C_PER_SHIFT
+# Surgeons: recalcular carga por cirurgião a partir de best_assignments
+surgeons_base = df_surgeons[["surgeon_id", "day", "shift", "available"]].drop_duplicates()
+
+if len(best_assignments):
+    surg_load_final = (best_assignments.groupby(["surgeon_id", "day", "shift"], as_index=False)
+                       .agg(used_min=("used_min", "sum")))
+else:
+    surg_load_final = surgeons_base[["surgeon_id", "day", "shift"]].copy()
+    surg_load_final["used_min"] = 0
+
+surgeons_free = surgeons_base.merge(surg_load_final, on=["surgeon_id", "day", "shift"], how="left").fillna({"used_min": 0})
+surgeons_free["cap_min"] = surgeons_free["available"] * C_PER_SHIFT
 surgeons_free["free_min"] = (surgeons_free["cap_min"] - surgeons_free["used_min"]).clip(lower=0)
 surgeons_free["utilization"] = surgeons_free.apply(
     lambda r: (r["used_min"] / r["cap_min"]) if r["cap_min"] > 0 else 0.0, axis=1
@@ -1477,12 +1839,19 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
     # Unassigned (if any)
     unassigned_patients.to_excel(writer, sheet_name="Unassigned", index=False)
     
-    # ======== ITERATIONS LOG (todas as iterações para análise de sensibilidade) ========
+    # ======== ITERATIONS LOG - LS (LS1, LS2, LS3) ========
     if iteration_log:
-        df_iter_log = pd.DataFrame(iteration_log).sort_values(["fase", "iteracao"])
+        df_iter_log = pd.DataFrame(iteration_log).sort_values(["iteracao"])  # Ordem cronológica
     else:
-        df_iter_log = pd.DataFrame([{"info": "Sem iterações registadas"}])
+        df_iter_log = pd.DataFrame([{"info": "Sem iterações LS registadas"}])
     df_iter_log.to_excel(writer, sheet_name="Iterations_Log", index=False)
+    
+    # ======== ITERATIONS LOG - ILS/VNS ========
+    if ils_log:
+        df_ils_log = pd.DataFrame(ils_log).sort_values(["iteracao"])  # Ordem cronológica
+    else:
+        df_ils_log = pd.DataFrame([{"info": "Sem iterações ILS registadas"}])
+    df_ils_log.to_excel(writer, sheet_name="IterationsILS_Log", index=False)
 
 print(f"\nExcel exported → {xlsx_path}")
 print(f"Initial score = {score_init['score']:.4f}, feasibility_score = {feas_init['feasibility_score']}")
