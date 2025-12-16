@@ -29,7 +29,7 @@ ALPHA3 = 0.25  # deadline closeness
 ALPHA4 = 0.25  # feasible blocks
 
 TOLERANCE = 15  # NEW- tolerance minutes to pass the capacity of the shift
-MAX_TIME_PER_MOVE = 1 * 60  # Tempo máximo por move em segundos (1 minuto)
+MAX_TIME_PER_MOVE = 0.5 * 60  # Tempo máximo por move em segundos (1 minuto)
 
 
 # ------------------------------
@@ -848,22 +848,21 @@ ils_log = []  # Para ILS/VNS
 
 def log_iteration(fase, iteracao, metrics, accepted):
     """
-    Regista as métricas APENAS das iterações aceites para análise de sensibilidade.
+    Regista as métricas de TODAS as iterações para análise de sensibilidade.
     """
-    if accepted:  # Só regista se a solução foi aceite (melhorou)
-        iteration_log.append({
-            "fase": fase,
-            "iteracao": int(iteracao),
-            "accepted": int(bool(accepted)),
-            "score": float(metrics["score"]),
-            "n_patient": int(metrics["assigned_patients"]),
-            "scheduled_rooms_r": float(metrics["ratio_scheduled_raw"]),
-            "u_waiting_k": float(metrics["avg_waiting_raw"]),
-            "p_priority_j": float(metrics["avg_priority_raw"]),
-            "w_overdue_l": int(metrics["deadline_overdue_patients"]),
-            "f_block_m": int(metrics["excess_block_min_raw"]),
-            "surgeon_min_raw": int(metrics["excess_surgeon_min_raw"]),
-        })
+    iteration_log.append({
+        "fase": fase,
+        "iteracao": int(iteracao),
+        "score": float(metrics["score"]),
+        "n_patient": int(metrics["assigned_patients"]),
+        "scheduled_rooms_r": float(metrics["ratio_scheduled_raw"]),
+        "u_waiting_k": float(metrics["avg_waiting_raw"]),
+        "p_priority_j": float(metrics["avg_priority_raw"]),
+        "w_overdue_l": int(metrics["deadline_overdue_patients"]),
+        "f_block_m": int(metrics["excess_block_min_raw"]),
+        "surgeon_min_raw": int(metrics["excess_surgeon_min_raw"]),
+        "acceptable": int(bool(accepted)),  # Última coluna: 1 se aceite, 0 se não
+    })
 
 
 def log_ils_iteration(fase, iteracao, metrics, ils_iteration=None, ls_phase=None, accepted=None, shaking_id=None):
@@ -891,7 +890,7 @@ def log_ils_iteration(fase, iteracao, metrics, ils_iteration=None, ls_phase=None
     if ls_phase is not None:
         log_entry["ls_phase"] = ls_phase
     if accepted is not None:
-        log_entry["accepted"] = int(bool(accepted))
+        log_entry["acceptable"] = int(bool(accepted))  # Última coluna
     
     ils_log.append(log_entry)
 
@@ -1260,23 +1259,23 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
         )
         neigh_score = evaluate_schedule(neighbor_enriched, df_patients, rooms_n, feas_n["excess_block_min"])["score"]
         
+        # Log TODAS as iterações LS1 dentro do ILS
+        if ils_iteration is not None:
+            ls_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
+            log_ils_iteration(
+                fase="ILS_LS1_ADD_ONLY",
+                iteracao=ls1_iter,
+                metrics=ls_metrics,
+                ils_iteration=ils_iteration,
+                ls_phase="LS1_ADD_ONLY",
+                accepted=(neigh_score > current_score),
+                shaking_id=shaking_id
+            )
+        
         if neigh_score > current_score:
             current_assignments = neighbor.copy()
             current_score = neigh_score
-            
-            # Log apenas MELHORIAS LS1 dentro do ILS
-            if ils_iteration is not None:
-                ls1_improvement_count += 1
-                ls_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
-                log_ils_iteration(
-                    fase="ILS_LS1_ADD_ONLY",
-                    iteracao=ls1_iter,  # Iteração real, não contador de melhorias
-                    metrics=ls_metrics,
-                    ils_iteration=ils_iteration,
-                    ls_phase="LS1_ADD_ONLY",
-                    accepted=True,
-                    shaking_id=shaking_id
-                )
+            ls1_improvement_count += 1
             
             if verbose:
                 print(f"      [LS1 Iter {ls1_iter}] Improved score to {neigh_score:.4f} | added={ids_added}")
@@ -1317,23 +1316,23 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
         )
         neigh_score = evaluate_schedule(neighbor_enriched, df_patients, rooms_n, feas_n["excess_block_min"])["score"]
         
+        # Log TODAS as iterações LS2 dentro do ILS
+        if ils_iteration is not None:
+            ls_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
+            log_ils_iteration(
+                fase="ILS_LS2_INTRA_SURGEON",
+                iteracao=ls2_iter,
+                metrics=ls_metrics,
+                ils_iteration=ils_iteration,
+                ls_phase="LS2_INTRA_SURGEON",
+                accepted=(neigh_score > current_score),
+                shaking_id=shaking_id
+            )
+        
         if neigh_score > current_score:
             current_assignments = neighbor.copy()
             current_score = neigh_score
-            
-            # Log apenas MELHORIAS LS2 dentro do ILS
-            if ils_iteration is not None:
-                ls2_improvement_count += 1
-                ls_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
-                log_ils_iteration(
-                    fase="ILS_LS2_INTRA_SURGEON",
-                    iteracao=ls2_iter,  # Iteração real, não contador de melhorias
-                    metrics=ls_metrics,
-                    ils_iteration=ils_iteration,
-                    ls_phase="LS2_INTRA_SURGEON",
-                    accepted=True,
-                    shaking_id=shaking_id
-                )
+            ls2_improvement_count += 1
             
             if verbose:
                 print(f"      [LS2 Iter {ls2_iter}] Improved to {neigh_score:.4f} | "
@@ -1374,23 +1373,23 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
         )
         neigh_score = evaluate_schedule(neighbor_enriched, df_patients, rooms_n, feas_n["excess_block_min"])["score"]
         
+        # Log TODAS as iterações LS3 dentro do ILS
+        if ils_iteration is not None:
+            ls_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
+            log_ils_iteration(
+                fase="ILS_LS3_SWAP_IJ",
+                iteracao=ls3_iter,
+                metrics=ls_metrics,
+                ils_iteration=ils_iteration,
+                ls_phase="LS3_SWAP_IJ",
+                accepted=(neigh_score > current_score),
+                shaking_id=shaking_id
+            )
+        
         if neigh_score > current_score:
             current_assignments = neighbor.copy()
             current_score = neigh_score
-            
-            # Log apenas MELHORIAS LS3 dentro do ILS
-            if ils_iteration is not None:
-                ls3_improvement_count += 1
-                ls_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
-                log_ils_iteration(
-                    fase="ILS_LS3_SWAP_IJ",
-                    iteracao=ls3_iter,  # Iteração real, não contador de melhorias
-                    metrics=ls_metrics,
-                    ils_iteration=ils_iteration,
-                    ls_phase="LS3_SWAP_IJ",
-                    accepted=True,
-                    shaking_id=shaking_id
-                )
+            ls3_improvement_count += 1
             
             if verbose:
                 print(f"      [LS3 Iter {ls3_iter}] Improved to {neigh_score:.4f} | removed={ids_out} | added={ids_in}")
@@ -1487,7 +1486,7 @@ print("\n" + "="*60)
 print("     ILS/VNS — Iterated Local Search com Shaking")
 print("="*60)
 
-ILS_TIME_LIMIT = 15 * 60  # 15 minutos em segundos
+ILS_TIME_LIMIT = 2 * 60  # 15 minutos em segundos
 
 # Ponto de partida: melhor solução do LS inicial
 incumbent_assignments = best_assignments.copy()
@@ -1527,7 +1526,7 @@ while (time.time() - start_time) < ILS_TIME_LIMIT:
         shaking1_count += 1
         shaken_sol, ids_out, ids_in, success = shaking(
             incumbent_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT,
-            min_out=2, max_out=5, min_in=2, max_in=5
+            min_out=3, max_out=5, min_in=3, max_in=5
         )
         shaking_name = "SHAKING_1"
     else:
@@ -1898,7 +1897,7 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
     
     # ======== ITERATIONS LOG - LS (LS1, LS2, LS3) ========
     if iteration_log:
-        df_iter_log = pd.DataFrame(iteration_log).sort_values(["iteracao"])  # Ordem cronológica
+        df_iter_log = pd.DataFrame(iteration_log).sort_values(["fase", "iteracao"])  # Agrupar por fase
     else:
         df_iter_log = pd.DataFrame([{"info": "Sem iterações LS registadas"}])
     df_iter_log.to_excel(writer, sheet_name="Iterations_Log", index=False)
@@ -1915,4 +1914,3 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
 
 print(f"\nExcel exported → {xlsx_path}")
 print(f"Initial score = {score_init['score']:.4f}, feasibility_score = {feas_init['feasibility_score']}")
-
