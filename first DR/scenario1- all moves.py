@@ -10,6 +10,7 @@ import ast
 import pandas as pd
 import random
 import warnings
+import time
 
 # Suprimir todos os warnings
 warnings.filterwarnings("ignore")
@@ -17,9 +18,7 @@ warnings.filterwarnings("ignore")
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-import os
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_FILE = os.path.join(SCRIPT_DIR, "Instance_GEN_20.dat")
+DATA_FILE = "Instance_C1_30.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time
@@ -30,6 +29,7 @@ ALPHA3 = 0.25  # deadline closeness
 ALPHA4 = 0.25  # feasible blocks
 
 TOLERANCE = 15  # NEW- tolerance minutes to pass the capacity of the shift
+MAX_TIME_PER_MOVE = 1 * 60  # Tempo máximo por move em segundos (1 minuto)
 
 
 # ------------------------------
@@ -1011,11 +1011,10 @@ best_feas = feas_init
 print("\n========== LS #1: SWAP i-j ==========")
 print(f"Initial score: {current_score:.4f}")
 
-max_iter_without_improvement = 500
-iter_without_improvement = 0
+ls1_start_time = time.time()
 it = 0
 
-while iter_without_improvement < max_iter_without_improvement:
+while (time.time() - ls1_start_time) < MAX_TIME_PER_MOVE:
     # -------- 1) MOVE --------
     neighbor_struct, ids_out, ids_in = generate_neighbor_swap(
         current_assignments,
@@ -1053,7 +1052,6 @@ while iter_without_improvement < max_iter_without_improvement:
     if neigh_score > current_score:
         current_assignments = neighbor_struct.copy()
         current_score = neigh_score
-        iter_without_improvement = 0  # Reset contador
 
         if neigh_score > best_score:
             best_score = neigh_score
@@ -1061,8 +1059,6 @@ while iter_without_improvement < max_iter_without_improvement:
             best_rooms_free = rooms_n.copy()
             best_feas = feas_n
             print(f"[LS1 Iter {it}] Improved to {neigh_score:.4f} | removed={ids_out} | added={ids_in}")
-    else:
-        iter_without_improvement += 1
     
     it += 1
 
@@ -1081,11 +1077,10 @@ N_LS2_ITER = 100
 
 print(f"Initial score: {current_score:.4f}")
 
-max_iter_without_improvement = 500
-iter_without_improvement = 0
+ls2_start_time = time.time()
 it = 0
 
-while iter_without_improvement < max_iter_without_improvement:
+while (time.time() - ls2_start_time) < MAX_TIME_PER_MOVE:
     neighbor, swap_info, success = generate_neighbor_intra_surgeon_swap(
         current_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT
     )
@@ -1119,7 +1114,6 @@ while iter_without_improvement < max_iter_without_improvement:
     if neigh_score > current_score:
         current_assignments = neighbor.copy()
         current_score = neigh_score
-        iter_without_improvement = 0  # Reset contador
         
         if neigh_score > best_score:
             best_score = neigh_score
@@ -1128,8 +1122,6 @@ while iter_without_improvement < max_iter_without_improvement:
             best_feas = feas_n
             print(f"[LS2 Iter {it}] Improved to {current_score:.4f} | "
                   f"surgeon={swap_info['surgeon_id']}, type={swap_info['swap_type']}")
-    else:
-        iter_without_improvement += 1
     
     it += 1
 
@@ -1148,11 +1140,10 @@ N_LS3_ITER = 500
 
 print(f"Initial add-only score: {current_score:.4f}")
 
-max_iter_without_improvement = 500
-iter_without_improvement = 0
+ls3_start_time = time.time()
 it = 0
 
-while iter_without_improvement < max_iter_without_improvement:
+while (time.time() - ls3_start_time) < MAX_TIME_PER_MOVE:
     neighbor, ids_added = generate_neighbor_add_only(
         current_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT, max_add=2
     )
@@ -1188,7 +1179,6 @@ while iter_without_improvement < max_iter_without_improvement:
     if neigh_score > current_score:
         current_assignments = neighbor.copy()
         current_score = neigh_score
-        iter_without_improvement = 0  # Reset contador
 
         if neigh_score > best_score:
             best_score = neigh_score
@@ -1196,8 +1186,6 @@ while iter_without_improvement < max_iter_without_improvement:
             best_rooms_free = rooms_n.copy()
             best_feas = feas_n
             print(f"[LS3 Iter {it}] Improved score to {current_score:.4f} | added={ids_added}")
-    else:
-        iter_without_improvement += 1
     
     it += 1
 
@@ -1209,7 +1197,7 @@ print(f"\nLS #3 final score = {best_score:.4f}\n")
 import time
 
 def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons, 
-                           C_PER_SHIFT, max_iter_no_improve=200, verbose=False, 
+                           C_PER_SHIFT, verbose=False, 
                            shaking_info=None, ils_iteration=None, shaking_id=None):
     """
     Executa as 3 fases de Local Search (SWAP, INTRA-SURGEON, ADD-ONLY)
@@ -1250,9 +1238,9 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
         print(f"\n      ========== LS #1: ADD-ONLY ==========")
         print(f"      Initial add-only score: {current_score:.4f}")
     
-    iter_no_improve = 0
+    ls1_phase_start = time.time()
     ls1_iter = 0
-    while iter_no_improve < max_iter_no_improve:
+    while (time.time() - ls1_phase_start) < MAX_TIME_PER_MOVE:
         ls1_iter += 1
         neighbor, ids_added = generate_neighbor_add_only(
             current_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT, max_add=2
@@ -1275,7 +1263,6 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
         if neigh_score > current_score:
             current_assignments = neighbor.copy()
             current_score = neigh_score
-            iter_no_improve = 0
             
             # Log apenas MELHORIAS LS1 dentro do ILS
             if ils_iteration is not None:
@@ -1299,8 +1286,6 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
                 best_ls_assignments = neighbor.copy()
                 best_ls_feas = feas_n
                 best_ls_rooms = rooms_n.copy()
-        else:
-            iter_no_improve += 1
     
     if verbose:
         print(f"\n      LS #1 final score = {best_ls_score:.4f}")
@@ -1312,15 +1297,14 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
     
     current_assignments = best_ls_assignments.copy()
     current_score = best_ls_score
-    iter_no_improve = 0
+    ls2_phase_start = time.time()
     ls2_iter = 0
-    while iter_no_improve < max_iter_no_improve:
+    while (time.time() - ls2_phase_start) < MAX_TIME_PER_MOVE:
         ls2_iter += 1
         neighbor, swap_info, success = generate_neighbor_intra_surgeon_swap(
             current_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT
         )
         if not success:
-            iter_no_improve += 1
             continue
         feas_n = feasibility_metrics(neighbor, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
         rooms_n = feas_n["rooms_cap_join"].copy()
@@ -1336,7 +1320,6 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
         if neigh_score > current_score:
             current_assignments = neighbor.copy()
             current_score = neigh_score
-            iter_no_improve = 0
             
             # Log apenas MELHORIAS LS2 dentro do ILS
             if ils_iteration is not None:
@@ -1361,8 +1344,6 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
                 best_ls_assignments = neighbor.copy()
                 best_ls_feas = feas_n
                 best_ls_rooms = rooms_n.copy()
-        else:
-            iter_no_improve += 1
     
     if verbose:
         print(f"\n      LS #2 final score = {best_ls_score:.4f}")
@@ -1374,9 +1355,9 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
     
     current_assignments = best_ls_assignments.copy()
     current_score = best_ls_score
-    iter_no_improve = 0
+    ls3_phase_start = time.time()
     ls3_iter = 0
-    while iter_no_improve < max_iter_no_improve:
+    while (time.time() - ls3_phase_start) < MAX_TIME_PER_MOVE:
         ls3_iter += 1
         neighbor, ids_out, ids_in = generate_neighbor_swap(
             current_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT,
@@ -1396,7 +1377,6 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
         if neigh_score > current_score:
             current_assignments = neighbor.copy()
             current_score = neigh_score
-            iter_no_improve = 0
             
             # Log apenas MELHORIAS LS3 dentro do ILS
             if ils_iteration is not None:
@@ -1420,8 +1400,6 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
                 best_ls_assignments = neighbor.copy()
                 best_ls_feas = feas_n
                 best_ls_rooms = rooms_n.copy()
-        else:
-            iter_no_improve += 1
     
     if verbose:
         print(f"\n      LS #3 final score = {best_ls_score:.4f}")
@@ -1510,7 +1488,6 @@ print("     ILS/VNS — Iterated Local Search com Shaking")
 print("="*60)
 
 ILS_TIME_LIMIT = 15 * 60  # 15 minutos em segundos
-LS_MAX_ITER_NO_IMPROVE = 500  # iterações sem melhoria por fase do LS
 
 # Ponto de partida: melhor solução do LS inicial
 incumbent_assignments = best_assignments.copy()
@@ -1526,7 +1503,7 @@ global_best_rooms = incumbent_rooms.copy()
 
 print(f"ILS starting score: {incumbent_score:.4f}")
 print(f"Time limit: {ILS_TIME_LIMIT // 60} minutes")
-print(f"LS max iterations without improvement: {LS_MAX_ITER_NO_IMPROVE}")
+print(f"Max time per LS move: {MAX_TIME_PER_MOVE} seconds")
 
 start_time = time.time()
 # Continuar numeração das iterações do LS inicial
@@ -1597,7 +1574,7 @@ while (time.time() - start_time) < ILS_TIME_LIMIT:
     
     ls_result, ls_score, ls_feas, ls_rooms = run_local_search_phase(
         shaken_sol, df_patients, df_rooms, df_surgeons, C_PER_SHIFT,
-        max_iter_no_improve=LS_MAX_ITER_NO_IMPROVE, verbose=False,
+        verbose=False,
         shaking_info={'name': shaking_name, 'iteration': ils_iter, 'removed': ids_out, 'added': ids_in},
         ils_iteration=ils_iter,
         shaking_id=shaking_id_str
