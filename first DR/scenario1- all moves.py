@@ -17,7 +17,9 @@ warnings.filterwarnings("ignore")
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "Instance_C1_30.dat"
+import os
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_FILE = os.path.join(SCRIPT_DIR, "Instance_GEN_20.dat")
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time
@@ -253,7 +255,7 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
     }
 
 def evaluate_schedule(assignments, patients, rooms_free, excess_block_min,
-                      weights=(0.5, 0.1, 0.2, 0.2)):
+                      weights=(0.8, 0.05, 0.05, 0.1)):
     w1, w2, w3, w4 = weights
     total_patients = len(patients)
     ratio_scheduled = (len(assignments) / total_patients) if total_patients else 0.0
@@ -292,8 +294,8 @@ def evaluate_schedule(assignments, patients, rooms_free, excess_block_min,
     score = (
         w1 * ratio_scheduled +
         w2 * util_rooms +
-        w3 * prio_rate #+
-        #w4 * norm_wait_term -
+        w3 * prio_rate +
+        w4 * norm_wait_term -
         - 0.001 * excess_block_min
     )
 
@@ -864,13 +866,13 @@ def log_iteration(fase, iteracao, metrics, accepted):
         })
 
 
-def log_ils_iteration(fase, iteracao, metrics):
+def log_ils_iteration(fase, iteracao, metrics, ils_iteration=None, ls_phase=None, accepted=None, shaking_id=None):
     """
-    Regista as métricas do ILS/VNS quando encontra novo ótimo local.
+    Regista as métricas do ILS/VNS (tanto shakings como LS internas).
     """
-    ils_log.append({
+    log_entry = {
         "fase": fase,
-        "iteracao": int(iteracao),
+        "iteracao": iteracao if not isinstance(iteracao, int) else int(iteracao),  # Pode ser "S1", "S2" ou número
         "score": float(metrics["score"]),
         "n_patient": int(metrics["assigned_patients"]),
         "scheduled_rooms_r": float(metrics["ratio_scheduled_raw"]),
@@ -879,7 +881,19 @@ def log_ils_iteration(fase, iteracao, metrics):
         "w_overdue_l": int(metrics["deadline_overdue_patients"]),
         "f_block_m": int(metrics["excess_block_min_raw"]),
         "surgeon_min_raw": int(metrics["excess_surgeon_min_raw"]),
-    })
+    }
+    
+    # Adicionar campos opcionais se fornecidos
+    if shaking_id is not None:
+        log_entry["shaking_id"] = shaking_id
+    if ils_iteration is not None:
+        log_entry["ils_iteration"] = int(ils_iteration)
+    if ls_phase is not None:
+        log_entry["ls_phase"] = ls_phase
+    if accepted is not None:
+        log_entry["accepted"] = int(bool(accepted))
+    
+    ils_log.append(log_entry)
 
 
 def eval_components(assignments_df, rooms_free_df, feas_dict):
@@ -1196,12 +1210,17 @@ import time
 
 def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons, 
                            C_PER_SHIFT, max_iter_no_improve=200, verbose=False, 
-                           shaking_info=None):
+                           shaking_info=None, ils_iteration=None, shaking_id=None):
     """
     Executa as 3 fases de Local Search (SWAP, INTRA-SURGEON, ADD-ONLY)
     a partir de uma solução inicial. Retorna a melhor solução encontrada.
     """
     current_assignments = start_assignments.copy()
+    
+    # Contadores separados para cada fase LS
+    ls1_improvement_count = 0
+    ls2_improvement_count = 0
+    ls3_improvement_count = 0
     
     # Avaliação inicial
     feas = feasibility_metrics(current_assignments, df_rooms, df_surgeons, df_patients, C_PER_SHIFT)
@@ -1258,6 +1277,20 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
             current_score = neigh_score
             iter_no_improve = 0
             
+            # Log apenas MELHORIAS LS1 dentro do ILS
+            if ils_iteration is not None:
+                ls1_improvement_count += 1
+                ls_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
+                log_ils_iteration(
+                    fase="ILS_LS1_ADD_ONLY",
+                    iteracao=ls1_iter,  # Iteração real, não contador de melhorias
+                    metrics=ls_metrics,
+                    ils_iteration=ils_iteration,
+                    ls_phase="LS1_ADD_ONLY",
+                    accepted=True,
+                    shaking_id=shaking_id
+                )
+            
             if verbose:
                 print(f"      [LS1 Iter {ls1_iter}] Improved score to {neigh_score:.4f} | added={ids_added}")
             
@@ -1305,6 +1338,20 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
             current_score = neigh_score
             iter_no_improve = 0
             
+            # Log apenas MELHORIAS LS2 dentro do ILS
+            if ils_iteration is not None:
+                ls2_improvement_count += 1
+                ls_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
+                log_ils_iteration(
+                    fase="ILS_LS2_INTRA_SURGEON",
+                    iteracao=ls2_iter,  # Iteração real, não contador de melhorias
+                    metrics=ls_metrics,
+                    ils_iteration=ils_iteration,
+                    ls_phase="LS2_INTRA_SURGEON",
+                    accepted=True,
+                    shaking_id=shaking_id
+                )
+            
             if verbose:
                 print(f"      [LS2 Iter {ls2_iter}] Improved to {neigh_score:.4f} | "
                       f"surgeon={swap_info['surgeon_id']}, type={swap_info['swap_type']}")
@@ -1350,6 +1397,20 @@ def run_local_search_phase(start_assignments, df_patients, df_rooms, df_surgeons
             current_assignments = neighbor.copy()
             current_score = neigh_score
             iter_no_improve = 0
+            
+            # Log apenas MELHORIAS LS3 dentro do ILS
+            if ils_iteration is not None:
+                ls3_improvement_count += 1
+                ls_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
+                log_ils_iteration(
+                    fase="ILS_LS3_SWAP_IJ",
+                    iteracao=ls3_iter,  # Iteração real, não contador de melhorias
+                    metrics=ls_metrics,
+                    ils_iteration=ils_iteration,
+                    ls_phase="LS3_SWAP_IJ",
+                    accepted=True,
+                    shaking_id=shaking_id
+                )
             
             if verbose:
                 print(f"      [LS3 Iter {ls3_iter}] Improved to {neigh_score:.4f} | removed={ids_out} | added={ids_in}")
@@ -1448,8 +1509,8 @@ print("\n" + "="*60)
 print("     ILS/VNS — Iterated Local Search com Shaking")
 print("="*60)
 
-ILS_TIME_LIMIT = 30 * 60  # 10 minutos em segundos
-LS_MAX_ITER_NO_IMPROVE = 200  # iterações sem melhoria por fase do LS (reduzido para permitir mais iterações ILS)
+ILS_TIME_LIMIT = 15 * 60  # 15 minutos em segundos
+LS_MAX_ITER_NO_IMPROVE = 500  # iterações sem melhoria por fase do LS
 
 # Ponto de partida: melhor solução do LS inicial
 incumbent_assignments = best_assignments.copy()
@@ -1521,10 +1582,25 @@ while (time.time() - start_time) < ILS_TIME_LIMIT:
     )
     shaking_score = evaluate_schedule(assign_shaken, df_patients, rooms_shaken, feas_shaken["excess_block_min"])["score"]
     
+    # Log do resultado do shaking (antes do LS)
+    shaking_metrics = eval_components(assign_shaken, rooms_shaken, feas_shaken)
+    shaking_id_str = f"S{ils_iter}"
+    log_ils_iteration(
+        fase=shaking_name,
+        iteracao=shaking_id_str,
+        metrics=shaking_metrics,
+        ils_iteration=ils_iter,
+        ls_phase="SHAKING",
+        accepted=None,
+        shaking_id=shaking_id_str
+    )
+    
     ls_result, ls_score, ls_feas, ls_rooms = run_local_search_phase(
         shaken_sol, df_patients, df_rooms, df_surgeons, C_PER_SHIFT,
         max_iter_no_improve=LS_MAX_ITER_NO_IMPROVE, verbose=False,
-        shaking_info={'name': shaking_name, 'iteration': ils_iter, 'removed': ids_out, 'added': ids_in}
+        shaking_info={'name': shaking_name, 'iteration': ils_iter, 'removed': ids_out, 'added': ids_in},
+        ils_iteration=ils_iter,
+        shaking_id=shaking_id_str
     )
     
     # ========== ACCEPTANCE CRITERION ==========
@@ -1552,14 +1628,6 @@ while (time.time() - start_time) < ILS_TIME_LIMIT:
         
         # VNS: volta ao Shaking 1 quando melhora
         shaking_level = 1
-        
-        # Log para análise de sensibilidade
-        ls_enriched = ls_result.merge(
-            df_patients[["patient_id", "priority", "waiting", "duration"]],
-            on="patient_id", how="left"
-        )
-        new_metrics = eval_components(ls_enriched, ls_rooms, ls_feas)
-        log_ils_iteration(f"ILS_{shaking_name}", ils_iteration_counter, new_metrics)
         
     else:
         # SEM MELHORIA: avança na hierarquia VNS
@@ -1860,7 +1928,10 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
     
     # ======== ITERATIONS LOG - ILS/VNS ========
     if ils_log:
-        df_ils_log = pd.DataFrame(ils_log).sort_values(["iteracao"])  # Ordem cronológica
+        df_ils_log = pd.DataFrame(ils_log)
+        # Ordenar por ils_iteration (se existir) e depois por ls_phase para manter a sequência
+        if 'ils_iteration' in df_ils_log.columns:
+            df_ils_log = df_ils_log.sort_values(["ils_iteration"], kind='stable')
     else:
         df_ils_log = pd.DataFrame([{"info": "Sem iterações ILS registadas"}])
     df_ils_log.to_excel(writer, sheet_name="IterationsILS_Log", index=False)

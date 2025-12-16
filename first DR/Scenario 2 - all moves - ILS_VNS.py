@@ -315,7 +315,7 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
     }
 
 def evaluate_schedule(assignments, patients, rooms_free, excess_block_min,
-                      weights=(0.6, 0.1, 0.25, 0.05)):
+                      weights=(0.8, 0.05, 0.05, 0.1)):
     w1, w2, w3, w4 = weights
     total_patients = len(patients)
     ratio_scheduled = (len(assignments) / total_patients) if total_patients else 0.0
@@ -333,27 +333,16 @@ def evaluate_schedule(assignments, patients, rooms_free, excess_block_min,
         prio_rate = float(merged["priority"].mean() / pmax) if pmax > 0 else 0.0
 
         # ------------------------------
-        # 2) WAITING TERM + DEADLINE PENALTY
+        # 2) WAITING TERM (relativo ao deadline de cada prioridade)
         # ------------------------------
-        wmax = float(patients["waiting"].max())
-
-        # base: esperar mais = score maior
-        if wmax > 0:
-            base_wait_term = 1.0 - (float(merged["waiting"].mean()) / wmax)
-        else:
-            base_wait_term = 1.0
-
-        # limite por prioridade
+        # Calcula para cada paciente: waiting / deadline_limit
+        # Pacientes mais próximos do deadline (proporcionalmente) têm score maior
         merged["deadline_limit"] = merged["priority"].apply(deadline_limit_from_priority)
-
-        # atraso face ao limite clínico
-        merged["overdue_days"] = (merged["waiting"] - merged["deadline_limit"]).clip(lower=0)
-        merged["overdue_frac"] = merged["overdue_days"] / merged["deadline_limit"]
-
-        avg_overdue_frac = float(merged["overdue_frac"].mean())
-
-        # termo final de waiting
-        norm_wait_term = max(0.0, base_wait_term - avg_overdue_frac)
+        merged["wait_ratio"] = merged.apply(
+            lambda r: r["waiting"] / r["deadline_limit"] if r["deadline_limit"] > 0 else 0.0,
+            axis=1
+        )
+        norm_wait_term = float(merged["wait_ratio"].mean())
 
     else:
         prio_rate = 0.0
@@ -367,7 +356,7 @@ def evaluate_schedule(assignments, patients, rooms_free, excess_block_min,
         w2 * util_rooms +
         w3 * prio_rate +
         w4 * norm_wait_term -
-        0.001 * excess_block_min
+        - 0.001 * excess_block_min
     )
 
     return {
