@@ -253,7 +253,7 @@ def feasibility_metrics(assignments, df_rooms, df_surgeons, patients, C_PER_SHIF
     }
 
 def evaluate_schedule(assignments, patients, rooms_free, excess_block_min,
-                      weights=(0.6, 0.1, 0.25, 0.05)):
+                      weights=(0.5, 0.1, 0.2, 0.2)):
     w1, w2, w3, w4 = weights
     total_patients = len(patients)
     ratio_scheduled = (len(assignments) / total_patients) if total_patients else 0.0
@@ -271,15 +271,16 @@ def evaluate_schedule(assignments, patients, rooms_free, excess_block_min,
         prio_rate = float(merged["priority"].mean() / pmax) if pmax > 0 else 0.0
 
         # ------------------------------
-        # 2) WAITING TERM
+        # 2) WAITING TERM (relativo ao deadline de cada prioridade)
         # ------------------------------
-        wmax = float(patients["waiting"].max())
-
-        # esperar mais = score maior (normalizado)
-        if wmax > 0:
-            norm_wait_term =  (float(merged["waiting"].mean()) / wmax)
-        else:
-            norm_wait_term = 1.0
+        # Calcula para cada paciente: waiting / deadline_limit
+        # Pacientes mais próximos do deadline (proporcionalmente) têm score maior
+        merged["deadline_limit"] = merged["priority"].apply(deadline_limit_from_priority)
+        merged["wait_ratio"] = merged.apply(
+            lambda r: r["waiting"] / r["deadline_limit"] if r["deadline_limit"] > 0 else 0.0,
+            axis=1
+        )
+        norm_wait_term = float(merged["wait_ratio"].mean())
 
     else:
         prio_rate = 0.0
@@ -369,6 +370,17 @@ def candidate_blocks_for_patient_in_solution(assignments, patient_row,
             (cand["room"] == cand["room_locked"])
         ]
         cand = cand.drop(columns=["room_locked"])
+
+    # 5) Adicionar coluna continuity (para compatibilidade com score_block_for_patient)
+    if len(assignments) and len(cand) > 0:
+        surg_prev = assignments[assignments["surgeon_id"] == sid][["day","shift","room"]]
+        cand = cand.merge(
+            surg_prev.assign(continuity=1).drop_duplicates(subset=["day","shift","room"]),
+            on=["day","shift","room"],
+            how="left"
+        ).fillna({"continuity": 0})
+    else:
+        cand["continuity"] = 0
 
     return cand
 
@@ -1436,8 +1448,8 @@ print("\n" + "="*60)
 print("     ILS/VNS — Iterated Local Search com Shaking")
 print("="*60)
 
-ILS_TIME_LIMIT = 10 * 60  # 10 minutos em segundos
-LS_MAX_ITER_NO_IMPROVE = 500  # iterações sem melhoria por fase do LS (reduzido para permitir mais iterações ILS)
+ILS_TIME_LIMIT = 30 * 60  # 10 minutos em segundos
+LS_MAX_ITER_NO_IMPROVE = 200  # iterações sem melhoria por fase do LS (reduzido para permitir mais iterações ILS)
 
 # Ponto de partida: melhor solução do LS inicial
 incumbent_assignments = best_assignments.copy()
