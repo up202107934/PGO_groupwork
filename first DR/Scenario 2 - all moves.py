@@ -13,8 +13,10 @@ import pandas as pd
 import random
 import numpy as np
 
-# ================== GLOBAL ITERATION LOG ==================
-global_iter_log = []
+# ================== ITERATION LOGS ==================
+iteration_log = []  # Para LS inicial (LS1, LS2, LS3, LS4)
+gvns_log = []  # Para GVNS (shakings e moves)
+global_iter_log = []  # DEPRECATED - manter para compatibilidade
 global_iter_counter = 0
 
 # Fix seeds
@@ -454,7 +456,7 @@ iteration_log = []
 
 def log_iteration(fase, iteracao, metrics, accepted):
     """
-    Regista apenas as colunas pedidas pelo utilizador.
+    Regista iterações do LS INICIAL (LS1, LS2, LS3, LS4).
     """
     iteration_log.append({
         "fase": fase,
@@ -470,6 +472,37 @@ def log_iteration(fase, iteracao, metrics, accepted):
         "excess_surgeon_min_raw": int(metrics["excess_surgeon_min_raw"]),
         "accepted": int(bool(accepted)),  # Última coluna: 1 se aceite, 0 se não
     })
+
+def log_gvns_iteration(fase, iteracao, metrics, gvns_iteration=None, move_phase=None, accepted=None, shaking_id=None):
+    """
+    Regista iterações do GVNS (shakings e moves internos).
+    Similar ao log_ils_iteration do Scenario 1.
+    """
+    log_entry = {
+        "fase": fase,
+        "iteracao": iteracao if not isinstance(iteracao, int) else int(iteracao),
+        "score": float(metrics["score"]),
+        "assigned_patients": int(metrics["assigned_patients"]),
+        "ratio_scheduled_raw": float(metrics["ratio_scheduled_raw"]),
+        "util_rooms_raw": float(metrics["util_rooms_raw"]),
+        "avg_waiting_raw": float(metrics["avg_waiting_raw"]),
+        "avg_priority_raw": float(metrics["avg_priority_raw"]),
+        "deadline_overdue_patients": int(metrics["deadline_overdue_patients"]),
+        "excess_block_min_raw": int(metrics["excess_block_min_raw"]),
+        "excess_surgeon_min_raw": int(metrics["excess_surgeon_min_raw"]),
+    }
+    
+    # Adicionar campos opcionais
+    if shaking_id is not None:
+        log_entry["shaking_id"] = shaking_id
+    if gvns_iteration is not None:
+        log_entry["gvns_iteration"] = int(gvns_iteration)
+    if move_phase is not None:
+        log_entry["move_phase"] = move_phase
+    if accepted is not None:
+        log_entry["accepted"] = int(bool(accepted))
+    
+    gvns_log.append(log_entry)
 
 def log_global_iteration(fase, iteracao_local, assignments_seq, rooms_free, feas):
     global global_iter_counter
@@ -2020,10 +2053,18 @@ for it in range(N_ILS_ITER):
     neigh_score, neigh_rooms_free, neigh_feas = full_evaluation(neighbor_seq)
     new_metrics = eval_components(neighbor_seq, neigh_rooms_free, neigh_feas)
 
-    log_iteration("LS4_RESEQUENCE", ils_iteration_counter, new_metrics, accepted=(neigh_score > prev_score))
+    accepted = (neigh_score > prev_score)
+
+    # ✅ LOG SEMPRE (igual aos outros LS)
+    log_iteration(
+        "LS4_RESEQUENCE",
+        ils_iteration_counter,
+        new_metrics,
+        accepted=accepted
+    )
 
     # --- 4) aceitar (first improvement) ---
-    if neigh_score > prev_score:
+    if accepted:
         current_enriched = neighbor_enriched.copy()
         current_assignments_ls4 = neighbor_assignments_ls4.copy()
 
@@ -2108,10 +2149,12 @@ S_curr = assignments_seq_view.copy()
 S_curr_score, _, _ = full_evaluation(S_curr)
 
 k = 1  # shaking index
+gvns_iteration_counter = 0  # contador global de iterações GVNS
 
 while k <= 2:
+    gvns_iteration_counter += 1
 
-    print(f"\n========== GVNS | SHAKING {k} ==========")
+    print(f"\n========== GVNS | SHAKING {k} (GVNS Iter {gvns_iteration_counter}) ==========")
 
     # ---------- SHAKING ----------
     S_shaken = shaking(
@@ -2132,9 +2175,21 @@ while k <= 2:
         ROOM_CHANGE_TIME
     )
     
-
-    base_score, _, _ = full_evaluation(S_local)
-    print(base_score)
+    # Log do resultado do SHAKING (antes dos MOVEs)
+    base_score, base_rooms, base_feas = full_evaluation(S_local)
+    shaking_metrics = eval_components(S_local, base_rooms, base_feas)
+    shaking_id_str = f"S{gvns_iteration_counter}"
+    log_gvns_iteration(
+        fase=f"SHAKING_{k}",
+        iteracao=shaking_id_str,
+        metrics=shaking_metrics,
+        gvns_iteration=gvns_iteration_counter,
+        move_phase="SHAKING",
+        accepted=None,
+        shaking_id=shaking_id_str
+    )
+    print(f"Shaking score: {base_score:.6f}")
+    
     # =================================================
     # MOVE 1 — LS2 (ADD ONLY)  — GVNS CORRETO
     # =================================================
@@ -2153,6 +2208,9 @@ while k <= 2:
 
     N_ILS2_ITER = 50
     print("Initial add-only score:", current_score)
+
+    # Resetar contador para MOVE 1
+    ils_iteration_counter = 0
 
     for it in range(N_ILS2_ITER):
         ils_iteration_counter += 1
@@ -2204,6 +2262,17 @@ while k <= 2:
         #     accepted=(neigh_score > best_score)
         # )
 
+        # Log GVNS para TODAS as iterações do MOVE 1
+        log_gvns_iteration(
+            fase="GVNS_MOVE1_ADD_ONLY",
+            iteracao=ils_iteration_counter,
+            metrics=new_metrics,
+            gvns_iteration=gvns_iteration_counter,
+            move_phase="MOVE1_ADD_ONLY",
+            accepted=(neigh_score > best_score),
+            shaking_id=shaking_id_str
+        )
+
         # ✅ APENAS atualizar o MELHOR do MOVE
         if neigh_score > best_score:
             best_score = neigh_score
@@ -2247,6 +2316,9 @@ while k <= 2:
     
     print("Initial swap score:", current_score)
     
+    # Resetar contador para MOVE 2
+    ils_iteration_counter = 0
+    
     for it in range(N_ILS_ITER):
         ils_iteration_counter += 1
     
@@ -2289,13 +2361,24 @@ while k <= 2:
             neigh_rooms_free,
             neigh_feas
         )
-    
+
         # log_iteration(
         #     "ILS1_SWAP",
         #     ils_iteration_counter,
         #     new_metrics,
         #     accepted=(neigh_score > best_score)
         # )
+    
+        # Log GVNS para TODAS as iterações do MOVE 2
+        log_gvns_iteration(
+            fase="GVNS_MOVE2_SWAP",
+            iteracao=ils_iteration_counter,
+            metrics=new_metrics,
+            gvns_iteration=gvns_iteration_counter,
+            move_phase="MOVE2_SWAP",
+            accepted=(neigh_score > best_score),
+            shaking_id=shaking_id_str
+        )
     
         # ✅ APENAS atualizar o MELHOR do MOVE
         if neigh_score > best_score:
@@ -2342,6 +2425,9 @@ while k <= 2:
     
     N_ILS4_ITER = 50
     
+    # Resetar contador para MOVE 3
+    ils_iteration_counter = 0
+    
     for it in range(N_ILS4_ITER):
         ils_iteration_counter += 1
     
@@ -2385,6 +2471,17 @@ while k <= 2:
         #     new_metrics,
         #     accepted=(neigh_score > best_score)
         # )
+    
+        # Log GVNS para TODAS as iterações do MOVE 3
+        log_gvns_iteration(
+            fase="GVNS_MOVE3_CROSS_ROOM",
+            iteracao=ils_iteration_counter,
+            metrics=new_metrics,
+            gvns_iteration=gvns_iteration_counter,
+            move_phase="MOVE3_CROSS_ROOM",
+            accepted=(neigh_score > best_score),
+            shaking_id=shaking_id_str
+        )
     
         # ✅ APENAS atualizar o MELHOR do MOVE
         if neigh_score > best_score:
@@ -2474,6 +2571,9 @@ while k <= 2:
     
     N_ILS_ITER = 30
     
+    # Resetar contador para MOVE 4
+    ils_iteration_counter = 0
+    
     for it in range(N_ILS_ITER):
         ils_iteration_counter += 1
     
@@ -2504,7 +2604,18 @@ while k <= 2:
         new_metrics = eval_components(neighbor_seq, neigh_rooms_free, neigh_feas)
     
         # ✅ accepted = melhora o MELHOR DO MOVE (não é “aceitação durante o move”)
-        log_iteration("LS4_RESEQUENCE", it, new_metrics, accepted=(neigh_score > best_score))
+        # log_iteration("LS4_RESEQUENCE", ils_iteration_counter, new_metrics, accepted=(neigh_score > best_score))
+    
+        # Log GVNS para TODAS as iterações do MOVE 4
+        log_gvns_iteration(
+            fase="GVNS_MOVE4_RESEQUENCE",
+            iteracao=ils_iteration_counter,
+            metrics=new_metrics,
+            gvns_iteration=gvns_iteration_counter,
+            move_phase="MOVE4_RESEQUENCE",
+            accepted=(neigh_score > best_score),
+            shaking_id=shaking_id_str
+        )
     
         # ✅ só guarda melhor do move
         if neigh_score > best_score:
@@ -2523,7 +2634,7 @@ while k <= 2:
             else:
                 acao_curta = "resequence: 0 blocos (n/a)"
     
-            log_improvement("LS4_RESEQUENCE", it, prev_metrics, new_metrics, acao_curta, change_log)
+            log_improvement("LS4_RESEQUENCE", ils_iteration_counter, prev_metrics, new_metrics, acao_curta, change_log)
     
     # ⬅️ SÓ AQUI o MOVE termina e S_local é atualizado
     S_local = best_seq.copy()
@@ -2533,7 +2644,8 @@ while k <= 2:
     # =================================================
     # DECISÃO GVNS
     # =================================================
-    final_score, _, _ = full_evaluation(S_local)
+    final_score, final_rooms, final_feas = full_evaluation(S_local)
+    final_metrics = eval_components(S_local, final_rooms, final_feas)
 
     print(f"\nCompare:")
     print(f"  before shaking: {S_curr_score:.6f}")
@@ -2544,8 +2656,17 @@ while k <= 2:
         S_curr = S_local.copy()
         S_curr_score = final_score
         k = 1
-        tmp_score, tmp_rooms, tmp_feas = full_evaluation(S_curr)
-        log_global_iteration("GVNS_ACCEPT", k, S_curr, tmp_rooms, tmp_feas)
+        
+        # Log da aceitação do GVNS
+        log_gvns_iteration(
+            fase="GVNS_ACCEPTED",
+            iteracao=f"Accept_{gvns_iteration_counter}",
+            metrics=final_metrics,
+            gvns_iteration=gvns_iteration_counter,
+            move_phase="ACCEPTED",
+            accepted=True,
+            shaking_id=shaking_id_str
+        )
     else:
         if k == 1:
             print("✘ No improvement → SHAKING 2")
@@ -2720,13 +2841,16 @@ with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
         df_iter_log = pd.DataFrame([{"info": "Sem iterações registadas"}])
     df_iter_log.to_excel(writer, sheet_name="Iterations_Log", index=False)  
     
-    # ======== GLOBAL ITER LOG (snapshots das soluções aceites) ========
-    if global_iter_log:
-        df_global = pd.DataFrame(global_iter_log)
+    # ======== GLOBAL ITER LOG (GVNS - shakings e moves) ========
+    if gvns_log:
+        df_gvns = pd.DataFrame(gvns_log)
+        # Ordenar por gvns_iteration (se existir) para manter sequência
+        if 'gvns_iteration' in df_gvns.columns:
+            df_gvns = df_gvns.sort_values(["gvns_iteration"], kind='stable')
     else:
-        df_global = pd.DataFrame([{"info": "Sem snapshots globais"}])
+        df_gvns = pd.DataFrame([{"info": "Sem iterações GVNS registadas"}])
     
-    df_global.to_excel(writer, sheet_name="Global_Iterations_Log", index=False)
+    df_gvns.to_excel(writer, sheet_name="Global_Iterations_Log", index=False)
 
 
 # ---------- 8) TEXT-BASED SCHEDULE (formato tipo imagem) ----------
