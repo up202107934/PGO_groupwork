@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore")
 # ------------------------------
 # PARAMETERS
 # ------------------------------
-DATA_FILE = "Instance_C1_30.dat"
+DATA_FILE = "Instance_C2_30.dat"
 
 C_PER_SHIFT = 360   # minutes per shift (6h * 60)
 CLEANUP = 17        # cleaning time
@@ -504,7 +504,7 @@ def generate_neighbor_intra_surgeon_swap(current_assignments,
         return current_assignments, {}, False
     
     # Escolher tipo de swap aleatoriamente (1-1, 1-2, 2-1)
-    swap_type = random.choice(['1-1', '1-2', '2-1'])
+    swap_type = random.choice(['1-1','1-2','2-1'])
     
     # Selecionar pacientes
     if swap_type == '1-1':
@@ -846,7 +846,8 @@ improvement_log = []
 iteration_log = []  # Para LS1, LS2, LS3
 ils_log = []  # Para ILS/VNS
 
-def log_iteration(fase, iteracao, metrics, accepted):
+def log_iteration(fase, iteracao, metrics, accepted,
+                  ids_out=None, ids_in=None):
     """
     Regista as métricas de TODAS as iterações para análise de sensibilidade.
     """
@@ -861,8 +862,13 @@ def log_iteration(fase, iteracao, metrics, accepted):
         "w_overdue_l": int(metrics["deadline_overdue_patients"]),
         "f_block_m": int(metrics["excess_block_min_raw"]),
         "surgeon_min_raw": int(metrics["excess_surgeon_min_raw"]),
-        "acceptable": int(bool(accepted)),  # Última coluna: 1 se aceite, 0 se não
+        "acceptable": int(bool(accepted)),
+
+        # NOVAS COLUNAS
+        "ids_out": ",".join(map(str, ids_out)) if ids_out else "",
+        "ids_in": ",".join(map(str, ids_in)) if ids_in else "",
     })
+
 
 
 def log_ils_iteration(fase, iteracao, metrics, ils_iteration=None, ls_phase=None, accepted=None, shaking_id=None):
@@ -1001,6 +1007,7 @@ current_score = evaluate_schedule(
     rooms_init,
     feas_init["excess_block_min"]
 )["score"]
+print(f"Initial score: {current_score:.4f}")
 
 best_score = current_score
 best_assignments = current_assignments.copy()
@@ -1008,7 +1015,7 @@ best_rooms_free = rooms_init.copy()
 best_feas = feas_init
 
 print("\n========== LS #1: SWAP i-j ==========")
-print(f"Initial score: {current_score:.4f}")
+
 
 ls1_start_time = time.time()
 it = 0
@@ -1046,7 +1053,15 @@ while (time.time() - ls1_start_time) < MAX_TIME_PER_MOVE:
 
     # Log da iteração
     new_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
-    log_iteration("LS1_SWAP", it, new_metrics, accepted=(neigh_score > current_score))
+    log_iteration(
+        fase="LS1_SWAP",
+        iteracao=it,
+        metrics=new_metrics,
+        accepted=(neigh_score > current_score),
+        ids_out=ids_out,
+        ids_in=ids_in
+    )
+
 
     if neigh_score > current_score:
         current_assignments = neighbor_struct.copy()
@@ -1173,7 +1188,14 @@ while (time.time() - ls3_start_time) < MAX_TIME_PER_MOVE:
 
     # Log da iteração LS3
     new_metrics = eval_components(neighbor_enriched, rooms_n, feas_n)
-    log_iteration("LS3_ADD_ONLY", it, new_metrics, accepted=(neigh_score > current_score))
+    log_iteration(
+        "LS3_ADD_ONLY",
+        it,
+        new_metrics,
+        accepted=(neigh_score > current_score),
+        ids_out=[],
+        ids_in=ids_added
+    )
 
     if neigh_score > current_score:
         current_assignments = neighbor.copy()

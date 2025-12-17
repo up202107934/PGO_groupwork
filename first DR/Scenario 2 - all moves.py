@@ -454,24 +454,29 @@ EVAL_WEIGHTS = (0.6, 0.1, 0.25, 0.05)  # manter em linha com evaluate_schedule
 improvement_log = []
 iteration_log = []
 
-def log_iteration(fase, iteracao, metrics, accepted):
+def log_iteration(fase, iteracao, metrics, accepted,
+                  ids_out=None, ids_in=None):
     """
-    Regista iterações do LS INICIAL (LS1, LS2, LS3, LS4).
+    Regista as métricas de TODAS as iterações para análise de sensibilidade.
     """
     iteration_log.append({
         "fase": fase,
         "iteracao": int(iteracao),
         "score": float(metrics["score"]),
-        "assigned_patients": int(metrics["assigned_patients"]),
-        "ratio_scheduled_raw": float(metrics["ratio_scheduled_raw"]),
-        "util_rooms_raw": float(metrics["util_rooms_raw"]),
-        "avg_waiting_raw": float(metrics["avg_waiting_raw"]),
-        "avg_priority_raw": float(metrics["avg_priority_raw"]),
-        "deadline_overdue_patients": int(metrics["deadline_overdue_patients"]),
-        "excess_block_min_raw": int(metrics["excess_block_min_raw"]),
-        "excess_surgeon_min_raw": int(metrics["excess_surgeon_min_raw"]),
-        "accepted": int(bool(accepted)),  # Última coluna: 1 se aceite, 0 se não
+        "n_patient": int(metrics["assigned_patients"]),
+        "scheduled_rooms_r": float(metrics["ratio_scheduled_raw"]),
+        "u_waiting_k": float(metrics["avg_waiting_raw"]),
+        "p_priority_j": float(metrics["avg_priority_raw"]),
+        "w_overdue_l": int(metrics["deadline_overdue_patients"]),
+        "f_block_m": int(metrics["excess_block_min_raw"]),
+        "surgeon_min_raw": int(metrics["excess_surgeon_min_raw"]),
+        "acceptable": int(bool(accepted)),
+
+        # NOVAS COLUNAS
+        "ids_out": ",".join(map(str, ids_out)) if ids_out else "",
+        "ids_in": ",".join(map(str, ids_in)) if ids_in else "",
     })
+    
 
 def log_gvns_iteration(fase, iteracao, metrics, gvns_iteration=None, move_phase=None, accepted=None, shaking_id=None):
     """
@@ -1620,14 +1625,15 @@ for it in range(N_ILS_ITER):
 
     accepted = (neigh_score > prev_score)
 
-    # ✅ LOG SEMPRE
+    
     log_iteration(
-        "ILS1_SWAP",
-        ils_iteration_counter,
-        new_metrics,
-        accepted=accepted
-    )
-
+    fase="LS1_SWAP",
+    iteracao=it,
+    metrics=new_metrics,
+    accepted=(neigh_score > current_score),
+    ids_out=ids_out,
+    ids_in=ids_in
+)
     # -------- 4) ACEITAR SE MELHORA --------
     if accepted:
         current_assignments = neighbor_seq.copy()
@@ -1710,8 +1716,14 @@ for it in range(N_ILS2_ITER):
     neigh_score, neigh_rooms_free, neigh_feas = full_evaluation(neighbor_seq)
     new_metrics = eval_components(neighbor_seq, neigh_rooms_free, neigh_feas)
 
-    log_iteration("ILS2_ADD_ONLY", ils_iteration_counter, new_metrics, accepted=(neigh_score > current_score))
-
+    log_iteration(
+        "LS2_ADD_ONLY",
+        it,
+        new_metrics,
+        accepted=(neigh_score > current_score),
+        ids_out=[],
+        ids_in=ids_added
+    )
     if neigh_score > current_score:
         current_assignments = neighbor_seq.copy()
         current_score = neigh_score

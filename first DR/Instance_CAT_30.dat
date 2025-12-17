@@ -1,0 +1,11 @@
+int NumberPatients = 8
+int NumberOfRooms = 1
+int NumberSurgeons = 3
+int NumberOfDays = 6
+Duration = [78,61,100,74,74,74,74,78];
+Priority = [0,1,0,0,0,0,0,1];
+Waiting = [289,253,289,164,84,80,70,37];
+
+Surgeon = [1,2,2,3,3,3,3,1];
+BlockAvailability = [[[1,0]],[[0,0]],[[0,0]],[[0,0]],[[0,0]],[[0,0]]];
+SurgeonAvailability = [[[1,1],[1,1],[1,1],[1,1],[1,1],[1,1]],[[1,1],[1,1],[1,1],[1,1],[1,1],[1,1]],[[1,1],[1,1],[1,1],[1,1],[1,1],[1,1]]];
