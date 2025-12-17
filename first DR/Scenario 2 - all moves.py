@@ -459,8 +459,6 @@ def log_iteration(fase, iteracao, metrics, accepted):
     iteration_log.append({
         "fase": fase,
         "iteracao": int(iteracao),
-        "accepted": int(bool(accepted)),
-
         "score": float(metrics["score"]),
         "assigned_patients": int(metrics["assigned_patients"]),
         "ratio_scheduled_raw": float(metrics["ratio_scheduled_raw"]),
@@ -470,6 +468,7 @@ def log_iteration(fase, iteracao, metrics, accepted):
         "deadline_overdue_patients": int(metrics["deadline_overdue_patients"]),
         "excess_block_min_raw": int(metrics["excess_block_min_raw"]),
         "excess_surgeon_min_raw": int(metrics["excess_surgeon_min_raw"]),
+        "accepted": int(bool(accepted)),  # Última coluna: 1 se aceite, 0 se não
     })
 
 def log_global_iteration(fase, iteracao_local, assignments_seq, rooms_free, feas):
@@ -1542,7 +1541,12 @@ best_feas = current_feas
 print("\nILS START")
 print("Initial score:", current_score)
 
+# Limpar iteration_log para conter apenas Local Search e inicializar contador
+iteration_log = []
+ils_iteration_counter = 0
+
 for it in range(N_ILS_ITER):
+    ils_iteration_counter += 1
 
     # -------- estado ANTES --------
     prev_score = current_score
@@ -1586,7 +1590,7 @@ for it in range(N_ILS_ITER):
     # ✅ LOG SEMPRE
     log_iteration(
         "ILS1_SWAP",
-        it,
+        ils_iteration_counter,
         new_metrics,
         accepted=accepted
     )
@@ -1636,7 +1640,11 @@ N_ILS2_ITER = 100
 
 print("Initial add-only score:", current_score)
 
+# Resetar contador para LS2
+ils_iteration_counter = 0
+
 for it in range(N_ILS2_ITER):
+    ils_iteration_counter += 1
 
     # estado ANTES
     _sc, _rooms, _feas = full_evaluation(current_assignments)
@@ -1646,7 +1654,10 @@ for it in range(N_ILS2_ITER):
     neighbor, ids_added = generate_neighbor_add_only(
         current_assignments, df_patients, df_rooms, df_surgeons, C_PER_SHIFT, max_add=2
     )
+    
+    # Se não conseguiu adicionar nada, logar como rejeitado e continuar
     if not ids_added:
+        log_iteration("ILS2_ADD_ONLY", ils_iteration_counter, prev_metrics, accepted=False)
         continue
 
     # ---- sequenciar o neighbor ANTES de avaliar ----
@@ -1666,7 +1677,7 @@ for it in range(N_ILS2_ITER):
     neigh_score, neigh_rooms_free, neigh_feas = full_evaluation(neighbor_seq)
     new_metrics = eval_components(neighbor_seq, neigh_rooms_free, neigh_feas)
 
-    log_iteration("ILS2_ADD_ONLY", it, new_metrics, accepted=(neigh_score > current_score))
+    log_iteration("ILS2_ADD_ONLY", ils_iteration_counter, new_metrics, accepted=(neigh_score > current_score))
 
     if neigh_score > current_score:
         current_assignments = neighbor_seq.copy()
@@ -1770,7 +1781,11 @@ print("Initial score (LS3):", current_score)
 
 N_ILS4_ITER = 100
 
+# Resetar contador para LS3
+ils_iteration_counter = 0
+
 for it in range(N_ILS4_ITER):
+    ils_iteration_counter += 1
 
     # estado ANTES
     prev_score, prev_rooms, prev_feas = full_evaluation(current_assignments)
@@ -1778,7 +1793,10 @@ for it in range(N_ILS4_ITER):
 
 
     neighbor, swap_info = generate_neighbor_cross_room_swap(current_assignments)
+    
+    # Se não conseguiu fazer swap, logar como rejeitado e continuar
     if swap_info is None:
+        log_iteration("LS3_CROSS_ROOM", ils_iteration_counter, prev_metrics, accepted=False)
         continue
 
     neighbor_seq = normalize_and_sequence(
@@ -1794,7 +1812,7 @@ for it in range(N_ILS4_ITER):
     neigh_score, neigh_rooms_free, neigh_feas = full_evaluation(neighbor_seq)
     new_metrics = eval_components(neighbor_seq, neigh_rooms_free, neigh_feas)
 
-    log_iteration("LS3_CROSS_ROOM", it, new_metrics, accepted=(neigh_score > current_score))
+    log_iteration("LS3_CROSS_ROOM", ils_iteration_counter, new_metrics, accepted=(neigh_score > current_score))
 
     if neigh_score > current_score:
         current_assignments = neighbor_seq.copy()
@@ -1967,7 +1985,11 @@ print("Initial resequence score:", current_score)
 
 N_ILS_ITER = 100
 
+# Resetar contador para LS4
+ils_iteration_counter = 0
+
 for it in range(N_ILS_ITER):
+    ils_iteration_counter += 1
 
     # --- 0) avaliar o estado atual (já sequenciado) ---
     # (current_seq tem de existir como expliquei acima)
@@ -1998,7 +2020,7 @@ for it in range(N_ILS_ITER):
     neigh_score, neigh_rooms_free, neigh_feas = full_evaluation(neighbor_seq)
     new_metrics = eval_components(neighbor_seq, neigh_rooms_free, neigh_feas)
 
-    log_iteration("LS4_RESEQUENCE", it, new_metrics, accepted=(neigh_score > prev_score))
+    log_iteration("LS4_RESEQUENCE", ils_iteration_counter, new_metrics, accepted=(neigh_score > prev_score))
 
     # --- 4) aceitar (first improvement) ---
     if neigh_score > prev_score:
@@ -2133,6 +2155,7 @@ while k <= 2:
     print("Initial add-only score:", current_score)
 
     for it in range(N_ILS2_ITER):
+        ils_iteration_counter += 1
 
         # métricas da solução BASE (para logging)
         prev_metrics = eval_components(
@@ -2174,12 +2197,12 @@ while k <= 2:
             neigh_feas
         )
 
-        log_iteration(
-            "ILS2_ADD_ONLY",
-            it,
-            new_metrics,
-            accepted=(neigh_score > best_score)
-        )
+        # log_iteration(
+        #     "ILS2_ADD_ONLY",
+        #     ils_iteration_counter,
+        #     new_metrics,
+        #     accepted=(neigh_score > best_score)
+        # )
 
         # ✅ APENAS atualizar o MELHOR do MOVE
         if neigh_score > best_score:
@@ -2225,6 +2248,7 @@ while k <= 2:
     print("Initial swap score:", current_score)
     
     for it in range(N_ILS_ITER):
+        ils_iteration_counter += 1
     
         # métricas da solução BASE (para logging)
         prev_metrics = eval_components(
@@ -2266,12 +2290,12 @@ while k <= 2:
             neigh_feas
         )
     
-        log_iteration(
-            "ILS1_SWAP",
-            it,
-            new_metrics,
-            accepted=(neigh_score > best_score)
-        )
+        # log_iteration(
+        #     "ILS1_SWAP",
+        #     ils_iteration_counter,
+        #     new_metrics,
+        #     accepted=(neigh_score > best_score)
+        # )
     
         # ✅ APENAS atualizar o MELHOR do MOVE
         if neigh_score > best_score:
@@ -2319,6 +2343,7 @@ while k <= 2:
     N_ILS4_ITER = 50
     
     for it in range(N_ILS4_ITER):
+        ils_iteration_counter += 1
     
         # métricas da solução BASE (para logging)
         prev_metrics = eval_components(
@@ -2354,12 +2379,12 @@ while k <= 2:
             neigh_feas
         )
     
-        log_iteration(
-            "LS3_CROSS_ROOM",
-            it,
-            new_metrics,
-            accepted=(neigh_score > best_score)
-        )
+        # log_iteration(
+        #     "LS3_CROSS_ROOM",
+        #     ils_iteration_counter,
+        #     new_metrics,
+        #     accepted=(neigh_score > best_score)
+        # )
     
         # ✅ APENAS atualizar o MELHOR do MOVE
         if neigh_score > best_score:
@@ -2450,6 +2475,7 @@ while k <= 2:
     N_ILS_ITER = 30
     
     for it in range(N_ILS_ITER):
+        ils_iteration_counter += 1
     
         # métricas da BASE (para logging coerente)
         prev_metrics = eval_components(current_seq, current_rooms_free, current_feas)
